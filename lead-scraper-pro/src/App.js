@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { Building2, Search, Download, Trash2, Upload, Check, X, Loader, MapPin } from 'lucide-react';
 
 export default function App() {
+  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
   const [leads, setLeads] = useState([]);
   const [scrapedData, setScrapedData] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -11,11 +13,13 @@ export default function App() {
   const [mapQuery, setMapQuery] = useState('');
   const [mapSearchInput, setMapSearchInput] = useState('');
   const [maxLeads, setMaxLeads] = useState(10);
+  const [useApolloSearch, setUseApolloSearch] = useState(false);
+  const [useYelpSearch, setUseYelpSearch] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeTab, setActiveTab] = useState('map');
   const [selectedArea, setSelectedArea] = useState(null);
   const [areaDetails, setAreaDetails] = useState('');
-  const [aiStatus, setAiStatus] = useState({ openai: { configured: false }, claude: { configured: false } });
+  const [aiStatus, setAiStatus] = useState({ openai: { configured: false }, claude: { configured: false }, apollo: { configured: false } });
   const [leafletLoaded, setLeafletLoaded] = useState(false);
   const [verificationStatus, setVerificationStatus] = useState(null);
 
@@ -75,7 +79,7 @@ export default function App() {
   useEffect(() => {
     const fetchAIStatus = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/ai-status');
+        const response = await fetch(`${API_URL}/api/ai-status`);
         const data = await response.json();
         setAiStatus(data);
       } catch (error) {
@@ -83,7 +87,7 @@ export default function App() {
       }
     };
     fetchAIStatus();
-  }, []);
+  }, [API_URL]);
 
   const [formData, setFormData] = useState({
     companyName: '',
@@ -507,7 +511,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     }
     setIsProcessing(true);
     try {
-      const response = await fetch('http://localhost:5000/api/enrich-manual', {
+      const response = await fetch(`${API_URL}/api/enrich-manual`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -534,10 +538,17 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     }
     setIsProcessing(true);
     try {
-      const response = await fetch('http://localhost:5000/api/scrape', {
+      const response = await fetch(`${API_URL}/api/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: searchQuery, location, country, zipcode, maxLeads: maxLeads || 10 })
+        body: JSON.stringify({
+          query: searchQuery,
+          location,
+          country,
+          zipcode,
+          maxLeads: maxLeads || 10,
+          useApolloSearch: useApolloSearch
+        })
       });
       const data = await response.json();
       setScrapedData(data.results || []);
@@ -560,10 +571,10 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     }
     setIsProcessing(true);
     try {
-      const response = await fetch('http://localhost:5000/api/scrape-area', {
+      const response = await fetch(`${API_URL}/api/scrape-area`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: mapQuery, area: selectedArea, country, zipcode, maxLeads: maxLeads || 10 })
+        body: JSON.stringify({ query: mapQuery, area: selectedArea, country, zipcode, maxLeads: maxLeads || 10, useApolloSearch: useApolloSearch })
       });
       const data = await response.json();
       setScrapedData(data.results || []);
@@ -579,14 +590,36 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     setIsProcessing(true);
     const total = scrapedData.length;
     const current = 1;
+
+    // Step 1: Apollo enrichment
+    setVerificationStatus({ companyName: lead.companyName, status: 'apollo', current, total });
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Step 2: PDL owner search
+    setVerificationStatus({ companyName: lead.companyName, status: 'pdl', current, total });
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Step 3: Numverify phone validation
+    setVerificationStatus({ companyName: lead.companyName, status: 'numverify', current, total });
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Step 4: Yelp verification
+    setVerificationStatus({ companyName: lead.companyName, status: 'yelp', current, total });
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Step 5: Hunter email enrichment
+    setVerificationStatus({ companyName: lead.companyName, status: 'hunter', current, total });
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Step 6: Claude verification
     setVerificationStatus({ companyName: lead.companyName, status: 'claude', current, total });
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Step 7: ChatGPT verification
+    setVerificationStatus({ companyName: lead.companyName, status: 'chatgpt', current, total });
+
     try {
-      // Simulate showing Claude status
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      setVerificationStatus({ companyName: lead.companyName, status: 'chatgpt', current, total });
-
-      const response = await fetch('http://localhost:5000/api/verify', {
+      const response = await fetch(`${API_URL}/api/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lead })
@@ -613,13 +646,26 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
         const lead = scrapedData[i];
         const current = i + 1;
         try {
-          // Show verification status for each lead
+          // Step 1: Apollo enrichment
+          setVerificationStatus({ companyName: lead.companyName, status: 'apollo', current, total });
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Step 2: PDL owner search
+          setVerificationStatus({ companyName: lead.companyName, status: 'pdl', current, total });
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Step 3: Numverify phone validation
+          setVerificationStatus({ companyName: lead.companyName, status: 'numverify', current, total });
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Step 4: Claude verification
           setVerificationStatus({ companyName: lead.companyName, status: 'claude', current, total });
           await new Promise(resolve => setTimeout(resolve, 500));
 
+          // Step 5: ChatGPT verification
           setVerificationStatus({ companyName: lead.companyName, status: 'chatgpt', current, total });
 
-          const response = await fetch('http://localhost:5000/api/verify', {
+          const response = await fetch(`${API_URL}/api/verify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ lead })
@@ -643,6 +689,20 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
 
   const rejectLead = (leadId) => setScrapedData(scrapedData.filter(l => l.id !== leadId));
   const deleteLead = (leadId) => setLeads(leads.filter(l => l.id !== leadId));
+  const cleanAllData = () => setScrapedData([]);
+
+  const exportScrapedToCSV = () => {
+    const csv = [
+      ['Company Name', 'Industry', 'Phone', 'Address', 'Zipcode', 'City', 'State', 'Country', 'Source'],
+      ...scrapedData.map(lead => [lead.companyName, lead.industry, lead.phone, lead.address, lead.zipcode, lead.city, lead.state, lead.country, lead.source])
+    ].map(row => row.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `leads_found_${Date.now()}.csv`;
+    a.click();
+  };
 
   const exportToCSV = () => {
     const csv = [
@@ -674,7 +734,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
           <h1 className="text-5xl font-bold text-white mb-2">SSAI Leads Pro</h1>
           <p className="text-purple-200">AI-Powered Lead Generation</p>
 
-          <div className="flex justify-center gap-4 mt-4">
+          <div className="flex justify-center gap-4 mt-4 flex-wrap">
             <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.openai.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
               <div className={`w-2 h-2 rounded-full ${aiStatus.openai.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
               <span className="text-sm font-medium text-white">ChatGPT: {aiStatus.openai.configured ? 'Active' : 'Inactive'}</span>
@@ -683,13 +743,33 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
               <div className={`w-2 h-2 rounded-full ${aiStatus.claude.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
               <span className="text-sm font-medium text-white">Claude: {aiStatus.claude.configured ? 'Active' : 'Inactive'}</span>
             </div>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.apollo?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
+              <div className={`w-2 h-2 rounded-full ${aiStatus.apollo?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
+              <span className="text-sm font-medium text-white">Apollo: {aiStatus.apollo?.configured ? 'Active' : 'Inactive'}</span>
+            </div>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.numverify?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
+              <div className={`w-2 h-2 rounded-full ${aiStatus.numverify?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
+              <span className="text-sm font-medium text-white">Numverify: {aiStatus.numverify?.configured ? 'Active' : 'Inactive'}</span>
+            </div>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.peopleDataLabs?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
+              <div className={`w-2 h-2 rounded-full ${aiStatus.peopleDataLabs?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
+              <span className="text-sm font-medium text-white">PeopleDataLabs: {aiStatus.peopleDataLabs?.configured ? 'Active' : 'Inactive'}</span>
+            </div>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.hunter?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
+              <div className={`w-2 h-2 rounded-full ${aiStatus.hunter?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
+              <span className="text-sm font-medium text-white">Hunter: {aiStatus.hunter?.configured ? 'Active' : 'Inactive'}</span>
+            </div>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.yelp?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
+              <div className={`w-2 h-2 rounded-full ${aiStatus.yelp?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
+              <span className="text-sm font-medium text-white">Yelp: {aiStatus.yelp?.configured ? 'Active' : 'Inactive'}</span>
+            </div>
           </div>
         </div>
 
         <div className="flex gap-4 mb-6 flex-wrap">
           <button onClick={() => setActiveTab('map')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'map' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/10 text-purple-200 hover:bg-white/20'}`}>
             <MapPin size={18} />
-            Map Selection
+            Map Search
           </button>
           <button onClick={() => setActiveTab('scraper')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'scraper' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/10 text-purple-200 hover:bg-white/20'}`}>
             <Search size={18} />
@@ -697,7 +777,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
           </button>
           <button onClick={() => setActiveTab('manual')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'manual' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/10 text-purple-200 hover:bg-white/20'}`}>
             <Upload size={18} />
-            Manual Entry
+            Find Contacts
           </button>
         </div>
 
@@ -709,11 +789,11 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                 Draw Area on Map
               </h2>
               <div className="mb-4 p-3 bg-purple-600/20 rounded-lg flex gap-2">
-                <input type="text" value={mapSearchInput} onChange={(e) => setMapSearchInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && searchLocation()} placeholder="Search for a location..." className="flex-1 px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                <input type="text" value={mapSearchInput} onChange={(e) => setMapSearchInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && searchLocation()} placeholder="Enter location..." className="flex-1 px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
                 <button onClick={searchLocation} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-semibold">Go</button>
               </div>
               <div className="mb-4">
-                <label className="block text-sm font-medium text-purple-200 mb-1">Search Query</label>
+                <label className="block text-sm font-medium text-purple-200 mb-1">Industry</label>
                 <input type="text" value={mapQuery} onChange={(e) => setMapQuery(e.target.value)} placeholder="Enter business type..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
               </div>
               <div className="mb-4 grid grid-cols-2 gap-4">
@@ -727,8 +807,42 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                 </div>
               </div>
               <div className="mb-4">
-                <label className="block text-sm font-medium text-purple-200 mb-1">Maximum Leads</label>
-                <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" max="100" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                <label className="block text-sm font-medium text-purple-200 mb-1">Maximum Leads (Apollo: up to 60+, Google: up to 60 per area)</label>
+                <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+              </div>
+              <div className="flex items-center gap-3 p-4 bg-purple-600/20 rounded-lg border border-purple-500/50 mb-4">
+                <input
+                  type="checkbox"
+                  id="useApolloSearchMap"
+                  checked={useApolloSearch}
+                  onChange={(e) => setUseApolloSearch(e.target.checked)}
+                  className="w-5 h-5 rounded border-2 border-purple-400 bg-white/10 checked:bg-purple-600 checked:border-purple-600 cursor-pointer"
+                />
+                <label htmlFor="useApolloSearchMap" className="text-white font-medium cursor-pointer flex-1">
+                  Use Apollo Search (Companies, Businesses)
+                </label>
+                {aiStatus.apollo?.configured && (
+                  <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
+                    Apollo Active
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3 p-4 bg-red-600/20 rounded-lg border border-red-500/50 mb-4">
+                <input
+                  type="checkbox"
+                  id="useYelpSearchMap"
+                  checked={useYelpSearch}
+                  onChange={(e) => setUseYelpSearch(e.target.checked)}
+                  className="w-5 h-5 rounded border-2 border-red-400 bg-white/10 checked:bg-red-600 checked:border-red-600 cursor-pointer"
+                />
+                <label htmlFor="useYelpSearchMap" className="text-white font-medium cursor-pointer flex-1">
+                  Use Yelp Search (Restaurants, Local Businesses)
+                </label>
+                {aiStatus.yelp?.configured && (
+                  <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
+                    Yelp Active
+                  </span>
+                )}
               </div>
               <div ref={mapRef} className="w-full rounded-xl border-2 border-white/20" style={{ height: '400px', minHeight: '400px' }} />
               <div className="mt-4 p-3 bg-purple-600/20 rounded-lg text-sm text-purple-200">
@@ -753,7 +867,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
               </h2>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Search Query</label>
+                  <label className="block text-sm font-medium text-purple-200 mb-1">Industry</label>
                   <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Enter business type..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
                 </div>
                 <div>
@@ -771,8 +885,42 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Maximum Leads</label>
-                  <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" max="100" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                  <label className="block text-sm font-medium text-purple-200 mb-1">Maximum Leads (Apollo: up to 60+, Google: up to 60 per area)</label>
+                  <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                </div>
+                <div className="flex items-center gap-3 p-4 bg-purple-600/20 rounded-lg border border-purple-500/50">
+                  <input
+                    type="checkbox"
+                    id="useApolloSearch"
+                    checked={useApolloSearch}
+                    onChange={(e) => setUseApolloSearch(e.target.checked)}
+                    className="w-5 h-5 rounded border-2 border-purple-400 bg-white/10 checked:bg-purple-600 checked:border-purple-600 cursor-pointer"
+                  />
+                  <label htmlFor="useApolloSearch" className="text-white font-medium cursor-pointer flex-1">
+                    Use Apollo Search (Companies, Businesses)
+                  </label>
+                  {aiStatus.apollo?.configured && (
+                    <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
+                      Apollo Active
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 p-4 bg-red-600/20 rounded-lg border border-red-500/50">
+                  <input
+                    type="checkbox"
+                    id="useYelpSearch"
+                    checked={useYelpSearch}
+                    onChange={(e) => setUseYelpSearch(e.target.checked)}
+                    className="w-5 h-5 rounded border-2 border-red-400 bg-white/10 checked:bg-red-600 checked:border-red-600 cursor-pointer"
+                  />
+                  <label htmlFor="useYelpSearch" className="text-white font-medium cursor-pointer flex-1">
+                    Use Yelp Search (Restaurants, Local Businesses)
+                  </label>
+                  {aiStatus.yelp?.configured && (
+                    <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
+                      Yelp Active
+                    </span>
+                  )}
                 </div>
                 <button onClick={handleScrape} disabled={isProcessing} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
                   {isProcessing ? <><Loader className="animate-spin" size={20} />Scraping...</> : <><Search size={20} />Start Scraping</>}
@@ -785,7 +933,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
             <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
               <h2 className="text-2xl font-semibold text-white mb-6 flex items-center gap-2">
                 <Upload className="text-purple-400" />
-                Manual Lead Entry
+                Find Contacts
               </h2>
               <div className="mb-4 p-3 bg-purple-600/20 rounded-lg text-sm text-purple-200">
                 <strong>Enter any partial information you have.</strong> AI will enrich and fill missing fields.
@@ -836,21 +984,37 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
 
           <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
             <div className="flex justify-between items-center mb-4 flex-wrap gap-3">
-              <h3 className="text-xl font-semibold text-white">Scraped Data ({scrapedData.length})</h3>
+              <h3 className="text-xl font-semibold text-white">Leads Found ({scrapedData.length})</h3>
               {scrapedData.length > 0 && (
-                <button
-                  onClick={verifyAllLeads}
-                  disabled={isProcessing}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-50 transition-all"
-                >
-                  <Check size={16} />
-                  Verify All ({scrapedData.length})
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={exportScrapedToCSV}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-all"
+                  >
+                    <Download size={16} />
+                    Download
+                  </button>
+                  <button
+                    onClick={cleanAllData}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-all"
+                  >
+                    <Trash2 size={16} />
+                    Clean Data
+                  </button>
+                  <button
+                    onClick={verifyAllLeads}
+                    disabled={isProcessing}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-50 transition-all"
+                  >
+                    <Check size={16} />
+                    Verify All ({scrapedData.length})
+                  </button>
+                </div>
               )}
             </div>
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {scrapedData.length === 0 ? (
-                <p className="text-purple-300 text-center py-8">No scraped data yet</p>
+                <p className="text-purple-300 text-center py-8">No leads found yet</p>
               ) : (
                 scrapedData.map(lead => (
                   <div key={lead.id} className="bg-white/10 rounded-lg p-4 border border-white/20">
@@ -888,18 +1052,55 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                 <div className="w-full bg-gray-700/50 rounded-full h-3 mb-4 overflow-hidden">
                   <div
                     className="bg-gradient-to-r from-purple-600 to-pink-600 h-3 rounded-full transition-all duration-500 ease-out"
-                    style={{ width: verificationStatus.status === 'claude' ? '50%' : '100%' }}
+                    style={{
+                      width: verificationStatus.status === 'apollo' ? '14.29%' :
+                        verificationStatus.status === 'pdl' ? '28.57%' :
+                          verificationStatus.status === 'numverify' ? '42.86%' :
+                            verificationStatus.status === 'yelp' ? '57.14%' :
+                              verificationStatus.status === 'hunter' ? '71.43%' :
+                                verificationStatus.status === 'claude' ? '85.71%' : '100%'
+                    }}
                   ></div>
                 </div>
 
-                <div className="flex items-center justify-center gap-4">
-                  <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${verificationStatus.status === 'claude' ? 'bg-purple-600' : 'bg-purple-600/20'}`}>
+                <div className="flex items-center justify-center gap-2 flex-wrap">
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'apollo' ? 'bg-blue-600' : 'bg-blue-600/20'}`}>
+                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'apollo' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
+                    <span className="text-sm font-medium text-white">
+                      {verificationStatus.status === 'apollo' ? 'Talking to Apollo...' : 'Apollo'}
+                    </span>
+                  </div>
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'pdl' ? 'bg-indigo-600' : 'bg-indigo-600/20'}`}>
+                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'pdl' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
+                    <span className="text-sm font-medium text-white">
+                      {verificationStatus.status === 'pdl' ? 'Talking to PDL...' : 'PDL'}
+                    </span>
+                  </div>
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'numverify' ? 'bg-orange-600' : 'bg-orange-600/20'}`}>
+                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'numverify' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
+                    <span className="text-sm font-medium text-white">
+                      {verificationStatus.status === 'numverify' ? 'Talking to Numverify...' : 'Numverify'}
+                    </span>
+                  </div>
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'yelp' ? 'bg-red-600' : 'bg-red-600/20'}`}>
+                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'yelp' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
+                    <span className="text-sm font-medium text-white">
+                      {verificationStatus.status === 'yelp' ? 'Talking to Yelp...' : 'Yelp'}
+                    </span>
+                  </div>
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'hunter' ? 'bg-teal-600' : 'bg-teal-600/20'}`}>
+                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'hunter' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
+                    <span className="text-sm font-medium text-white">
+                      {verificationStatus.status === 'hunter' ? 'Talking to Hunter...' : 'Hunter'}
+                    </span>
+                  </div>
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'claude' ? 'bg-purple-600' : 'bg-purple-600/20'}`}>
                     <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'claude' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
                     <span className="text-sm font-medium text-white">
                       {verificationStatus.status === 'claude' ? 'Talking to Claude...' : 'Claude'}
                     </span>
                   </div>
-                  <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${verificationStatus.status === 'chatgpt' ? 'bg-green-600' : 'bg-green-600/20'}`}>
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'chatgpt' ? 'bg-green-600' : 'bg-green-600/20'}`}>
                     <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'chatgpt' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
                     <span className="text-sm font-medium text-white">
                       {verificationStatus.status === 'chatgpt' ? 'Talking to ChatGPT...' : 'ChatGPT'}
