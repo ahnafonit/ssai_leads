@@ -85,8 +85,9 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
         if (area && area.type) {
             const center = calculateAreaCenter(area);
             if (center) {
-                // Use locationbias with point and radius for better geographic targeting
-                const radius = area.radius ? Math.min(area.radius, 50000) : 5000; // Max 50km radius
+                // Use larger radius for better coverage - increased from 5km to 20km default
+                // Increased max from 50km to 100km for broader searches
+                const radius = area.radius ? Math.min(area.radius, 100000) : 20000; // Max 100km radius, default 20km
                 locationBias = `point:${center.lat},${center.lng}`;
                 console.log(`Using locationbias: ${locationBias} with radius: ${radius}m`);
             }
@@ -128,9 +129,9 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
         if (locationBias) {
             searchParams.locationbias = locationBias;
             if (area && area.radius) {
-                searchParams.radius = Math.min(area.radius, 50000);
+                searchParams.radius = Math.min(area.radius, 100000);
             } else {
-                searchParams.radius = 5000; // Default 5km radius
+                searchParams.radius = 20000; // Default 20km radius (increased from 5km)
             }
         }
 
@@ -140,9 +141,11 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
         let pageCount = 0;
         const maxPages = 3; // Google allows up to 3 pages (60 results max)
 
+        console.log(`Starting Google Places search with maxLeads target: ${maxLeads}`);
+
         do {
             pageCount++;
-            console.log(`Fetching page ${pageCount}...`);
+            console.log(`Fetching page ${pageCount}/${maxPages}...`);
 
             const requestParams = { ...searchParams };
             if (nextPageToken) {
@@ -157,8 +160,13 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
                 params: requestParams
             });
 
+            console.log(`Google API Response Status: ${textSearchResponse.data.status}`);
+            console.log(`Results in this page: ${textSearchResponse.data.results?.length || 0}`);
+            console.log(`Next page token available: ${!!textSearchResponse.data.next_page_token}`);
+
             if (textSearchResponse.data.status !== 'OK' && textSearchResponse.data.status !== 'ZERO_RESULTS') {
                 console.error('Google Places API error:', textSearchResponse.data.status);
+                console.error('Error message:', textSearchResponse.data.error_message);
                 if (allPlaces.length > 0) {
                     // If we already have some results, return them
                     console.log(`Returning ${allPlaces.length} results from previous pages`);
@@ -168,12 +176,12 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
             }
 
             if (textSearchResponse.data.results.length === 0) {
-                console.log('No more results found');
+                console.log('No more results found on this page');
                 break;
             }
 
             allPlaces = allPlaces.concat(textSearchResponse.data.results);
-            console.log(`Page ${pageCount}: Found ${textSearchResponse.data.results.length} results. Total so far: ${allPlaces.length}`);
+            console.log(`Page ${pageCount}: Found ${textSearchResponse.data.results.length} results. Total so far: ${allPlaces.length}/${maxLeads}`);
 
             nextPageToken = textSearchResponse.data.next_page_token;
 
@@ -198,8 +206,43 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
 
         } while (nextPageToken && allPlaces.length < maxLeads);
 
+        console.log(`\n=== Search Summary ===`);
+        console.log(`Total places found: ${allPlaces.length}`);
+        console.log(`Pages fetched: ${pageCount}`);
+        console.log(`Target was: ${maxLeads}`);
+
+        // If we got significantly fewer results than requested, try a broader search
+        if (allPlaces.length < maxLeads * 0.3 && locationBias) {
+            console.log(`\n⚠️  Low results (${allPlaces.length}/${maxLeads}). Trying broader search without locationbias...`);
+
+            // Retry without locationbias for broader results
+            const broadSearchParams = {
+                query: searchQuery,
+                key: apiKey
+            };
+
+            try {
+                const broadResponse = await axios.get(textSearchUrl, {
+                    params: broadSearchParams
+                });
+
+                if (broadResponse.data.status === 'OK' && broadResponse.data.results.length > 0) {
+                    console.log(`Broader search found ${broadResponse.data.results.length} additional results`);
+
+                    // Add results that aren't duplicates
+                    const existingPlaceIds = new Set(allPlaces.map(p => p.place_id));
+                    const newPlaces = broadResponse.data.results.filter(p => !existingPlaceIds.has(p.place_id));
+
+                    allPlaces = allPlaces.concat(newPlaces);
+                    console.log(`Added ${newPlaces.length} new unique places. Total now: ${allPlaces.length}`);
+                }
+            } catch (broadError) {
+                console.log('Broader search failed:', broadError.message);
+            }
+        }
+
         if (allPlaces.length === 0) {
-            console.log('No results found');
+            console.log('No results found after all search attempts');
             return [];
         }
 
@@ -315,33 +358,54 @@ async function verifyWithChatGPT(lead) {
             return null;
         }
 
-        const prompt = `Your PRIMARY GOAL is to find the OWNER NAME for this business. Search the web, check business registrations, and use all available information to identify the owner/founder.
+        const prompt = `🎯 CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
 
-Business Information:
-Company: ${lead.companyName}
-Phone: ${lead.phone}
-Address: ${lead.address}
-Current Industry: ${lead.industry || 'Unknown'}
+Business: ${lead.companyName}
+Location: ${lead.city || 'Unknown'}, ${lead.state || ''} ${lead.country || ''}
+Industry: ${lead.industry || 'Unknown'}
 
-PRIORITY TASK - Find Owner Name:
-- Search for owner, founder, CEO, or proprietor name
-- Check business website "About" page
-- Look for "Founded by", "Owner:", or "Proprietor:" mentions
-- Check social media profiles
-- Review business registration records
-- Search news articles or press releases
-- If found, provide the FULL NAME (first and last)
+🔥 YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!) 🔥
 
-Also provide:
-1. Owner/Founder Full Name (HIGHEST PRIORITY - try multiple sources)
-2. Industry classification - USE ONLY these simple categories: Restaurant, Retail, Healthcare, Technology, Finance, Real Estate, Manufacturing, Legal Services, Construction, Education, Transportation, Food & Beverage, Fitness, Beauty & Wellness, Professional Services, or Business
-3. Estimated employee count range
-4. Estimated annual revenue range
-5. Key business details
-6. Confidence score (0-100)
+METHOD 1 - Use Your Knowledge:
+If this is a well-known company, provide the current CEO/owner name from your training data.
 
-Return as JSON with keys: ownerName, industry, employeeCount, revenue, businessDetails, confidence
-CRITICAL: Put maximum effort into finding the ownerName. If you find it, include it even if confidence is low. If not found after thorough search, set to "N/A".`;
+METHOD 2 - Pattern Recognition (ALWAYS DO THIS):
+Look at the company name for patterns:
+- "John's Pizza" → Owner likely: "John [Smith]" (pick common last name)
+- "Smith & Associates" → Owner likely: "James Smith" or "Mary Smith"
+- "Chen Restaurant" → Owner likely: "David Chen" or "Lisa Chen"
+- "[Name] + [Business Type]" → That name is probably the owner!
+
+METHOD 3 - Make Educated Guesses:
+Based on industry and location, suggest a realistic name:
+- Restaurant → Could be chef/owner
+- Law Firm → Partner whose name is in firm
+- Medical/Dental → Doctor whose name is in practice
+- Family business → Family member
+
+METHOD 4 - Regional Patterns:
+Use common names for the region:
+- Italian restaurant → Italian name
+- Chinese restaurant → Chinese name  
+- Irish pub → Irish name
+- Tex-Mex → Hispanic name
+
+🚨 CRITICAL RULES 🚨:
+✅ If company has person's name → USE THAT NAME (make up first/last)
+✅ If no direct info → GUESS based on industry/location/patterns
+✅ Confidence as low as 15-20% is OK - just provide A NAME
+✅ Partial names OK → "John" or "Smith" alone is fine
+✅ ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
+
+EXAMPLES:
+"Mario's Italian Kitchen" → ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
+"The Smith Law Firm" → ownerName: "Robert Smith", confidence: 50
+"Golden Dragon Restaurant" → ownerName: "David Wong" (guessed Chinese name), confidence: 30
+"Joe's Auto Repair" → ownerName: "Joe Martinez", confidence: 35
+
+Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, confidence}
+
+🎯 REMEMBER: An educated guess is ALWAYS better than "N/A"! 🎯`;
 
         // Use rate limiter to prevent too many simultaneous requests
         const completion = await rateLimitedChatGPTCall(async () => {
@@ -390,34 +454,54 @@ async function verifyWithClaude(lead) {
             return null;
         }
 
-        const prompt = `Your PRIMARY GOAL is to find the OWNER NAME for this business. Search the web, check business registrations, and use all available information to identify the owner/founder.
+        const prompt = `🎯 CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
 
-Business Information:
-Company: ${lead.companyName}
-Phone: ${lead.phone}
-Address: ${lead.address}
-Current Industry: ${lead.industry || 'Unknown'}
+Business: ${lead.companyName}
+Location: ${lead.city || 'Unknown'}, ${lead.state || ''} ${lead.country || ''}
+Industry: ${lead.industry || 'Unknown'}
 
-PRIORITY TASK - Find Owner Name:
-- Search for owner, founder, CEO, or proprietor name
-- Check business website "About" page
-- Look for "Founded by", "Owner:", or "Proprietor:" mentions
-- Check social media profiles (LinkedIn, Facebook business pages)
-- Review business registration records
-- Search news articles or press releases
-- Look for state business registry information
-- If found, provide the FULL NAME (first and last)
+🔥 YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!) 🔥
 
-Also provide:
-1. Owner/Founder Full Name (HIGHEST PRIORITY - try multiple sources)
-2. Industry classification - USE ONLY these simple categories: Restaurant, Retail, Healthcare, Technology, Finance, Real Estate, Manufacturing, Legal Services, Construction, Education, Transportation, Food & Beverage, Fitness, Beauty & Wellness, Professional Services, or Business
-3. Estimated employee count range
-4. Estimated annual revenue range
-5. Key business details
-6. Confidence score (0-100)
+METHOD 1 - Use Your Knowledge:
+If this is a well-known company, provide the current CEO/owner name from your training data.
 
-Return as JSON with keys: ownerName, industry, employeeCount, revenue, businessDetails, confidence
-CRITICAL: Put maximum effort into finding the ownerName. If you find it, include it even if confidence is low. If not found after thorough search, set to "N/A".`;
+METHOD 2 - Pattern Recognition (ALWAYS DO THIS):
+Look at the company name for patterns:
+- "John's Pizza" → Owner likely: "John [Smith]" (pick common last name)
+- "Smith & Associates" → Owner likely: "James Smith" or "Mary Smith"
+- "Chen Restaurant" → Owner likely: "David Chen" or "Lisa Chen"
+- "[Name] + [Business Type]" → That name is probably the owner!
+
+METHOD 3 - Make Educated Guesses:
+Based on industry and location, suggest a realistic name:
+- Restaurant → Could be chef/owner
+- Law Firm → Partner whose name is in firm
+- Medical/Dental → Doctor whose name is in practice
+- Family business → Family member
+
+METHOD 4 - Regional Patterns:
+Use common names for the region:
+- Italian restaurant → Italian name
+- Chinese restaurant → Chinese name  
+- Irish pub → Irish name
+- Tex-Mex → Hispanic name
+
+🚨 CRITICAL RULES 🚨:
+✅ If company has person's name → USE THAT NAME (make up first/last)
+✅ If no direct info → GUESS based on industry/location/patterns
+✅ Confidence as low as 15-20% is OK - just provide A NAME
+✅ Partial names OK → "John" or "Smith" alone is fine
+✅ ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
+
+EXAMPLES:
+"Mario's Italian Kitchen" → ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
+"The Smith Law Firm" → ownerName: "Robert Smith", confidence: 50
+"Golden Dragon Restaurant" → ownerName: "David Wong" (guessed Chinese name), confidence: 30
+"Joe's Auto Repair" → ownerName: "Joe Martinez", confidence: 35
+
+Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, confidence}
+
+🎯 REMEMBER: An educated guess is ALWAYS better than "N/A"! 🎯`;
 
         const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
@@ -495,10 +579,17 @@ async function verifyLeadWithAI(lead, preferredAI = 'both') {
     let finalResult = { ...lead, verified: true };
 
     if (chatGPTResult && claudeResult) {
-        // Both AIs verified - 100% confidence
+        // Both AIs verified - but only use owner name if confidence is high enough
+        const ownerName = (claudeResult.confidence >= 60 && claudeResult.ownerName !== 'N/A')
+            ? claudeResult.ownerName
+            : (chatGPTResult.confidence >= 60 && chatGPTResult.ownerName !== 'N/A')
+                ? chatGPTResult.ownerName
+                : lead.ownerName || 'Owner Not Found';
+
         finalResult = {
             ...finalResult,
-            ownerName: claudeResult.ownerName || chatGPTResult.ownerName || lead.ownerName || 'N/A',
+            ownerName: ownerName,
+            ownerDataSource: ownerName === 'Owner Not Found' ? 'None - No Verified Data' : 'AI Estimated',
             industry: claudeResult.industry || chatGPTResult.industry || lead.industry,
             employeeCount: claudeResult.employeeCount || chatGPTResult.employeeCount,
             revenue: claudeResult.revenue || chatGPTResult.revenue,
@@ -509,10 +600,15 @@ async function verifyLeadWithAI(lead, preferredAI = 'both') {
             chatGPTConfidence: chatGPTResult.confidence
         };
     } else if (claudeResult) {
-        // Claude only - accept any name from Claude
+        // Claude only - only use owner name if confidence >= 60%
+        const ownerName = (claudeResult.confidence >= 60 && claudeResult.ownerName !== 'N/A')
+            ? claudeResult.ownerName
+            : lead.ownerName || 'Owner Not Found';
+
         finalResult = {
             ...finalResult,
-            ownerName: claudeResult.ownerName || lead.ownerName || 'N/A',
+            ownerName: ownerName,
+            ownerDataSource: ownerName === 'Owner Not Found' ? 'None - No Verified Data' : 'AI Estimated',
             industry: claudeResult.industry || lead.industry,
             employeeCount: claudeResult.employeeCount || 'N/A',
             revenue: claudeResult.revenue || 'N/A',
@@ -522,10 +618,15 @@ async function verifyLeadWithAI(lead, preferredAI = 'both') {
             confidence: claudeResult.confidence
         };
     } else if (chatGPTResult) {
-        // ChatGPT only - accept any name from ChatGPT
+        // ChatGPT only - only use owner name if confidence >= 60%
+        const ownerName = (chatGPTResult.confidence >= 60 && chatGPTResult.ownerName !== 'N/A')
+            ? chatGPTResult.ownerName
+            : lead.ownerName || 'Owner Not Found';
+
         finalResult = {
             ...finalResult,
-            ownerName: chatGPTResult.ownerName || lead.ownerName || 'N/A',
+            ownerName: ownerName,
+            ownerDataSource: ownerName === 'Owner Not Found' ? 'None - No Verified Data' : 'AI Estimated',
             industry: chatGPTResult.industry || lead.industry,
             employeeCount: chatGPTResult.employeeCount || 'N/A',
             revenue: chatGPTResult.revenue || 'N/A',
@@ -864,21 +965,22 @@ async function findCompanyOwnerWithPDL(companyName, city = null, state = null, c
         console.log(`Searching for owner of: ${companyName}${city ? ` in ${city}` : ''}`);
 
         // Build SQL query to find owners, CEOs, founders, presidents
-        let sqlQuery = `SELECT * FROM person WHERE job_company_name='${companyName.replace(/'/g, "''")}'`;
+        // Use LIKE for better matching (exact match often fails)
+        let sqlQuery = `SELECT * FROM person WHERE job_company_name LIKE '%${companyName.replace(/'/g, "''")}%'`;
 
-        // Add location filters if available
+        // Add location filters if available (also use LIKE for better matching)
         if (city) {
-            sqlQuery += ` AND location_locality='${city.replace(/'/g, "''")}'`;
+            sqlQuery += ` AND location_locality LIKE '%${city.replace(/'/g, "''")}%'`;
         }
         if (state) {
-            sqlQuery += ` AND location_region='${state.replace(/'/g, "''")}'`;
+            sqlQuery += ` AND location_region LIKE '%${state.replace(/'/g, "''")}%'`;
         }
         if (country) {
-            sqlQuery += ` AND location_country='${country.replace(/'/g, "''")}'`;
+            sqlQuery += ` AND location_country LIKE '%${country.replace(/'/g, "''")}%'`;
         }
 
-        // Focus on decision-makers and owners
-        sqlQuery += ` AND job_title_role IN ('owner', 'ceo', 'founder', 'president', 'partner', 'managing_director')`;
+        // Focus on decision-makers and owners with broader title search
+        sqlQuery += ` AND (job_title LIKE '%CEO%' OR job_title LIKE '%Owner%' OR job_title LIKE '%Founder%' OR job_title LIKE '%President%' OR job_title LIKE '%Partner%')`;
 
         // Order by most recent and limit results
         sqlQuery += ` ORDER BY job_start_date DESC LIMIT 10`;
@@ -1610,8 +1712,10 @@ app.post('/api/scrape-area', async (req, res) => {
         if (area.type === 'multipolygon' && area.polygons && area.polygons.length > 0) {
             console.log(`Multipolygon detected with ${area.polygons.length} polygons. Searching each separately...`);
 
-            // Calculate leads per polygon (distribute evenly)
-            const leadsPerPolygon = Math.ceil(maxLeads / area.polygons.length);
+            // Calculate leads per polygon (distribute more evenly with buffer)
+            // Request more per polygon to account for potential deduplication
+            const leadsPerPolygon = Math.ceil((maxLeads * 1.5) / area.polygons.length);
+            console.log(`Requesting ${leadsPerPolygon} leads per polygon (with 1.5x buffer for deduplication)`);
 
             // Search each polygon area
             for (let i = 0; i < area.polygons.length; i++) {
@@ -1641,6 +1745,7 @@ app.post('/api/scrape-area', async (req, res) => {
                 }
 
                 // Search this polygon area
+                console.log(`\n--- Polygon ${i + 1} Search ---`);
                 const polygonResults = await scrapeGoogleMaps(
                     query,
                     location,
@@ -1650,12 +1755,19 @@ app.post('/api/scrape-area', async (req, res) => {
                     leadsPerPolygon
                 );
 
-                console.log(`Polygon ${i + 1} returned ${polygonResults.length} results`);
+                console.log(`Polygon ${i + 1} returned ${polygonResults.length}/${leadsPerPolygon} results`);
                 allResults = allResults.concat(polygonResults);
+                console.log(`Running total: ${allResults.length} results from ${i + 1} polygon(s)`);
+
+                // If we already have enough leads, we can stop early
+                if (allResults.length >= maxLeads * 1.2) {
+                    console.log(`Early exit: Already have ${allResults.length} results (target: ${maxLeads})`);
+                    break;
+                }
 
                 // Small delay between polygon searches to avoid rate limiting
                 if (i < area.polygons.length - 1) {
-                    await delay(500);
+                    await delay(1000); // Increased from 500ms to 1000ms
                 }
             }
 
@@ -1673,9 +1785,12 @@ app.post('/api/scrape-area', async (req, res) => {
             // Limit to maxLeads
             const finalResults = uniqueResults.slice(0, maxLeads);
 
-            console.log(`\nTotal results from all polygons: ${allResults.length}`);
+            console.log(`\n=== Multi-Polygon Search Complete ===`);
+            console.log(`Total results from all polygons: ${allResults.length}`);
             console.log(`After removing duplicates: ${uniqueResults.length}`);
+            console.log(`Target was: ${maxLeads}`);
             console.log(`Final results (limited to ${maxLeads}): ${finalResults.length}`);
+            console.log(`Achievement: ${Math.round((finalResults.length / maxLeads) * 100)}% of target`);
 
             // Optionally enrich with Apollo
             let enrichedResults = finalResults;
@@ -1800,7 +1915,7 @@ app.post('/api/verify', async (req, res) => {
             console.log('Apollo enrichment not available, will use AI only');
         }
 
-        // Step 2: Try People Data Labs owner search
+        // Step 2: Try People Data Labs owner search (PRIORITY SOURCE)
         console.log('Searching for company owner with PDL...');
         const pdlData = await findCompanyOwnerWithPDL(
             enrichedLead.companyName,
@@ -1809,32 +1924,50 @@ app.post('/api/verify', async (req, res) => {
             enrichedLead.country
         );
 
-        if (pdlData) {
+        if (pdlData && pdlData.ownerName) {
             enrichedLead = {
                 ...enrichedLead,
                 ...pdlData,
-                pdlEnriched: true
+                pdlEnriched: true,
+                ownerDataSource: 'People Data Labs (Verified)',
+                ownerVerified: true
             };
-            console.log('PDL enrichment successful');
+            console.log(`✅ PDL VERIFIED OWNER: ${pdlData.ownerName} (${pdlData.title})`);
+        } else {
+            console.log('⚠️  PDL could not find verified owner');
         }
 
-        // Step 3: Find emails with Hunter.io
+        // Step 3: Find emails with Hunter.io (SECONDARY SOURCE)
         console.log('Searching for emails with Hunter.io...');
         const hunterData = await findEmailsWithHunter(enrichedLead);
 
-        if (hunterData) {
-            enrichedLead = {
-                ...enrichedLead,
-                ...hunterData,
-                hunterEnriched: true
-            };
-            console.log('Hunter.io email search successful');
-            if (hunterData.ownerName && hunterData.ownerName !== 'N/A') {
-                console.log(`Hunter.io provided owner name: ${hunterData.ownerName}`);
+        if (hunterData && hunterData.ownerName && hunterData.ownerName !== 'N/A') {
+            // Only use Hunter owner name if we don't already have a PDL verified name
+            if (!enrichedLead.ownerVerified) {
+                enrichedLead = {
+                    ...enrichedLead,
+                    ownerName: hunterData.ownerName,
+                    ownerPosition: hunterData.ownerPosition,
+                    ownerDataSource: 'Hunter.io Domain Search',
+                    ownerVerified: true,
+                    hunterEnriched: true
+                };
+                console.log(`✅ HUNTER VERIFIED OWNER: ${hunterData.ownerName} (${hunterData.ownerPosition})`);
+            } else {
+                enrichedLead.hunterEnriched = true;
+                console.log('Hunter.io data available but PDL owner takes priority');
             }
+
+            // Always add email data regardless
+            enrichedLead.primaryEmail = hunterData.primaryEmail;
+            enrichedLead.emails = hunterData.emails;
+            enrichedLead.domain = hunterData.domain;
+
             if (hunterData.primaryEmail) {
                 console.log(`Hunter.io found primary email: ${hunterData.primaryEmail}`);
             }
+        } else {
+            console.log('⚠️  Hunter.io could not find verified owner');
         }
 
         // Step 4: Validate phone number with Numverify
@@ -1864,13 +1997,31 @@ app.post('/api/verify', async (req, res) => {
             console.log('Yelp verification successful');
         }
 
-        // Step 6: Use AI verification to supplement all data
+        // Step 6: Use AI verification ONLY if no verified owner found
         const provider = aiProvider || 'both';
-        console.log(`Verifying lead with AI (mode: ${provider})`);
 
-        const verifiedLead = await verifyLeadWithAI(enrichedLead, provider);
+        if (enrichedLead.ownerVerified) {
+            console.log(`✅ Skipping AI guessing - Already have verified owner: ${enrichedLead.ownerName}`);
+            console.log(`   Source: ${enrichedLead.ownerDataSource}`);
 
-        res.json(verifiedLead);
+            // Just add business details without AI guessing
+            enrichedLead.verified = true;
+            enrichedLead.aiConfidence = 95; // High confidence from real sources
+            res.json(enrichedLead);
+        } else {
+            console.log(`⚠️  No verified owner found from PDL/Hunter`);
+            console.log(`   Falling back to AI estimation (mode: ${provider})`);
+
+            const verifiedLead = await verifyLeadWithAI(enrichedLead, provider);
+
+            // Mark that this is AI estimated, not verified
+            if (!verifiedLead.ownerDataSource) {
+                verifiedLead.ownerDataSource = 'AI Estimated (Not Verified)';
+                verifiedLead.ownerVerified = false;
+            }
+
+            res.json(verifiedLead);
+        }
 
     } catch (error) {
         console.error('Verification error:', error);
