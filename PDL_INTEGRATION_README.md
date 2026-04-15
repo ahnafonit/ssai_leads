@@ -430,11 +430,11 @@ Found X potential owners/decision-makers
 
 The People Data Labs integration is now fully implemented and ready to use. It provides:
 
-✅ **Accurate owner/decision-maker discovery**
-✅ **Comprehensive contact information** (email, phone, LinkedIn)
-✅ **Work history and education data**
-✅ **High confidence scores (90%)**
-✅ **Easy-to-use REST API endpoint**
-✅ **SQL-based flexible searching**
+ **Accurate owner/decision-maker discovery**
+ **Comprehensive contact information** (email, phone, LinkedIn)
+ **Work history and education data**
+ **High confidence scores (90%)**
+ **Easy-to-use REST API endpoint**
+ **SQL-based flexible searching**
 
 The implementation is production-ready and can be integrated into your lead scraping and enrichment workflows to automatically discover company owners and key decision-makers.
