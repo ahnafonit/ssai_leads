@@ -20,9 +20,9 @@ This guide will walk you through deploying your Lead Scraper Pro application to 
 ## Prerequisites
 
 ### Required Accounts & Tools
-- ✅ GitHub account (with repository: https://github.com/ahnafonit/ssai_leads.git)
-- ✅ Google Cloud Platform account ([sign up here](https://cloud.google.com/))
-- ✅ Your API Keys ready:
+-  GitHub account (with repository: https://github.com/ahnafonit/ssai_leads.git)
+-  Google Cloud Platform account ([sign up here](https://cloud.google.com/))
+-  Your API Keys ready:
   - OpenAI API Key
   - Anthropic (Claude) API Key
   - Google Places API Key
