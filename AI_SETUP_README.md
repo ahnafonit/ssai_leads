@@ -156,7 +156,7 @@ Content-Type: application/json
 - Check your API credit balance
 
 ### Rate Limiting
-- OpenAI: 3 requests per minute (free tier)
+- OpenAI: 3 requests per minute
 - Anthropic: Check your plan limits
 - The app includes built-in rate limiting to prevent issues
 
