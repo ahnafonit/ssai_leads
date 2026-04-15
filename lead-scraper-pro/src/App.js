@@ -66,7 +66,7 @@ export default function App() {
 
     // Create and add script
     const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=AIzaSyC8xqfyncj5cnDSgkkNaJopPGg7L4E4mxQ&libraries=drawing,places&callback=initMap`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${process.env.REACT_APP_GOOGLE_MAPS_API_KEY}&libraries=drawing,places&callback=initMap`;
     script.async = true;
     script.onerror = () => {
       console.error('Failed to load Google Maps API');
@@ -702,6 +702,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     a.href = url;
     a.download = `leads_found_${Date.now()}.csv`;
     a.click();
+    window.URL.revokeObjectURL(url);
   };
 
   const exportToCSV = () => {
@@ -715,6 +716,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     a.href = url;
     a.download = `leads_${Date.now()}.csv`;
     a.click();
+    window.URL.revokeObjectURL(url);
   };
 
   const exportToJSON = () => {
@@ -725,6 +727,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     a.href = url;
     a.download = `leads_${Date.now()}.json`;
     a.click();
+    window.URL.revokeObjectURL(url);
   };
 
   return (

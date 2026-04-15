@@ -46,11 +46,6 @@ let scrapedLeads = [];
 // Helper function to simulate delay
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Rate limiter removed for faster ChatGPT responses
-async function rateLimitedChatGPTCall(fn) {
-    return await fn();
-}
-
 // Helper function to generate random data for demo purposes
 const generateMockLead = (companyName, phone = null, address = null, zipcode = null, country = null) => ({
     id: Date.now() + Math.random(),
@@ -63,7 +58,7 @@ const generateMockLead = (companyName, phone = null, address = null, zipcode = n
     industry: ['Restaurant', 'Retail', 'Service', 'Technology', 'Healthcare'][Math.floor(Math.random() * 5)],
     ownerName: ['John Smith', 'Jane Doe', 'Mike Johnson', 'Sarah Wilson', 'David Brown'][Math.floor(Math.random() * 5)],
     website: `www.${companyName?.toLowerCase().replace(/\s+/g, '') || 'business'}.com`,
-    rating: (Math.random() * 2 + 3).toFixed(1), // 3.0 to 5.0
+    rating: (Math.random() * 2 + 3).toFixed(1),
     reviewCount: Math.floor(Math.random() * 500 + 10)
 });
 
@@ -85,11 +80,7 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
         if (area && area.type) {
             const center = calculateAreaCenter(area);
             if (center) {
-                // Use larger radius for better coverage - increased from 5km to 20km default
-                // Increased max from 50km to 100km for broader searches
-                const radius = area.radius ? Math.min(area.radius, 100000) : 20000; // Max 100km radius, default 20km
                 locationBias = `point:${center.lat},${center.lng}`;
-                console.log(`Using locationbias: ${locationBias} with radius: ${radius}m`);
             }
         }
 
@@ -116,7 +107,6 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
             searchQuery += ` ${country}`;
         }
 
-        console.log(`Searching Google Places: ${searchQuery}, maxLeads: ${maxLeads}`);
 
         // Step 1: Text Search to find places with pagination support
         const textSearchUrl = 'https://maps.googleapis.com/maps/api/place/textsearch/json';
@@ -141,11 +131,8 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
         let pageCount = 0;
         const maxPages = 3; // Google allows up to 3 pages (60 results max)
 
-        console.log(`Starting Google Places search with maxLeads target: ${maxLeads}`);
-
         do {
             pageCount++;
-            console.log(`Fetching page ${pageCount}/${maxPages}...`);
 
             const requestParams = { ...searchParams };
             if (nextPageToken) {
@@ -160,60 +147,44 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
                 params: requestParams
             });
 
-            console.log(`Google API Response Status: ${textSearchResponse.data.status}`);
-            console.log(`Results in this page: ${textSearchResponse.data.results?.length || 0}`);
-            console.log(`Next page token available: ${!!textSearchResponse.data.next_page_token}`);
-
             if (textSearchResponse.data.status !== 'OK' && textSearchResponse.data.status !== 'ZERO_RESULTS') {
                 console.error('Google Places API error:', textSearchResponse.data.status);
                 console.error('Error message:', textSearchResponse.data.error_message);
                 if (allPlaces.length > 0) {
                     // If we already have some results, return them
-                    console.log(`Returning ${allPlaces.length} results from previous pages`);
                     break;
                 }
                 throw new Error(`Google Places API error: ${textSearchResponse.data.status}`);
             }
 
             if (textSearchResponse.data.results.length === 0) {
-                console.log('No more results found on this page');
                 break;
             }
 
             allPlaces = allPlaces.concat(textSearchResponse.data.results);
-            console.log(`Page ${pageCount}: Found ${textSearchResponse.data.results.length} results. Total so far: ${allPlaces.length}/${maxLeads}`);
 
             nextPageToken = textSearchResponse.data.next_page_token;
 
             // Check if we have enough results
             if (allPlaces.length >= maxLeads) {
-                console.log(`Reached target of ${maxLeads} leads`);
                 break;
             }
 
             // Check if we've hit the page limit
             if (pageCount >= maxPages) {
-                console.log(`Reached maximum page limit (${maxPages})`);
                 break;
             }
 
             // If there's a next page token, wait before requesting it
             // Google requires a short delay before the token becomes valid
             if (nextPageToken) {
-                console.log('Waiting for next page token to become valid...');
                 await delay(2000); // 2 second delay between pages
             }
 
         } while (nextPageToken && allPlaces.length < maxLeads);
 
-        console.log(`\n=== Search Summary ===`);
-        console.log(`Total places found: ${allPlaces.length}`);
-        console.log(`Pages fetched: ${pageCount}`);
-        console.log(`Target was: ${maxLeads}`);
-
         // If we got significantly fewer results than requested, try a broader search
         if (allPlaces.length < maxLeads * 0.3 && locationBias) {
-            console.log(`\n⚠️  Low results (${allPlaces.length}/${maxLeads}). Trying broader search without locationbias...`);
 
             // Retry without locationbias for broader results
             const broadSearchParams = {
@@ -227,28 +198,23 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
                 });
 
                 if (broadResponse.data.status === 'OK' && broadResponse.data.results.length > 0) {
-                    console.log(`Broader search found ${broadResponse.data.results.length} additional results`);
-
                     // Add results that aren't duplicates
                     const existingPlaceIds = new Set(allPlaces.map(p => p.place_id));
                     const newPlaces = broadResponse.data.results.filter(p => !existingPlaceIds.has(p.place_id));
 
                     allPlaces = allPlaces.concat(newPlaces);
-                    console.log(`Added ${newPlaces.length} new unique places. Total now: ${allPlaces.length}`);
                 }
             } catch (broadError) {
-                console.log('Broader search failed:', broadError.message);
+                console.error('Broader search failed:', broadError.message);
             }
         }
 
         if (allPlaces.length === 0) {
-            console.log('No results found after all search attempts');
             return [];
         }
 
         const results = [];
         const places = allPlaces.slice(0, maxLeads); // Use user-specified maxLeads
-        console.log(`Processing ${places.length} places out of ${allPlaces.length} total found`);
 
         // Step 2: Get details for each place
         for (const place of places) {
@@ -264,72 +230,8 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
                 });
 
                 if (detailsResponse.data.status === 'OK') {
-                    const details = detailsResponse.data.result;
-
-                    // Extract address components
-                    const addressComponents = details.address_components || [];
-                    let extractedZipcode = '';
-                    let extractedCity = '';
-                    let extractedCountry = '';
-                    let extractedState = '';
-
-                    addressComponents.forEach(component => {
-                        if (component.types.includes('postal_code')) {
-                            extractedZipcode = component.long_name;
-                        }
-                        if (component.types.includes('locality')) {
-                            extractedCity = component.long_name;
-                        }
-                        if (component.types.includes('country')) {
-                            extractedCountry = component.long_name;
-                        }
-                        if (component.types.includes('administrative_area_level_1')) {
-                            extractedState = component.short_name;
-                        }
-                    });
-
-                    // Determine industry from types
-                    const types = details.types || [];
-                    let industry = 'Business';
-                    if (types.includes('restaurant')) industry = 'Restaurant';
-                    else if (types.includes('store') || types.includes('retail')) industry = 'Retail';
-                    else if (types.includes('hospital') || types.includes('doctor')) industry = 'Healthcare';
-                    else if (types.includes('lawyer')) industry = 'Legal Services';
-                    else if (types.includes('real_estate_agency')) industry = 'Real Estate';
-                    else if (types.includes('cafe') || types.includes('bakery')) industry = 'Food & Beverage';
-                    else if (types.includes('gym')) industry = 'Fitness';
-                    else if (types.includes('beauty_salon') || types.includes('spa')) industry = 'Beauty & Wellness';
-                    else if (types.length > 0) {
-                        industry = types[0].replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-                    }
-
-                    // Clean and validate extracted data
-                    const cleanedPhone = cleanPhoneNumber(details.formatted_phone_number || details.international_phone_number);
-                    const cleanedZipcode = cleanZipcode(extractedZipcode);
-                    const cleanedAddress = cleanAddress(details.formatted_address);
-
-                    const lead = {
-                        id: Date.now() + Math.random(),
-                        companyName: details.name,
-                        phone: cleanedPhone,
-                        address: cleanedAddress,
-                        zipcode: cleanedZipcode,
-                        city: extractedCity || 'N/A',
-                        country: extractedCountry || 'N/A',
-                        state: extractedState || '',
-                        industry: industry,
-                        website: details.website || 'N/A',
-                        rating: details.rating || 'N/A',
-                        reviewCount: details.user_ratings_total || 0,
-                        latitude: details.geometry?.location?.lat || null,
-                        longitude: details.geometry?.location?.lng || null,
-                        placeId: place.place_id,
-                        types: types,
-                        source: 'Google Places API'
-                    };
-
+                    const lead = convertPlaceDetailsToLead(detailsResponse.data.result, place.place_id);
                     results.push(lead);
-                    console.log(`✓ Found: ${lead.companyName} - ${lead.phone}`);
                 }
 
                 // Small delay to avoid rate limiting
@@ -341,7 +243,6 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
             }
         }
 
-        console.log(`Successfully retrieved ${results.length} real businesses from Google Places API`);
         return results;
 
     } catch (error) {
@@ -354,76 +255,72 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
 async function verifyWithChatGPT(lead) {
     try {
         if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'your_openai_api_key_here') {
-            console.log('OpenAI API key not configured, using mock data');
             return null;
         }
 
-        const prompt = `🎯 CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
+        const prompt = `CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
 
 Business: ${lead.companyName}
 Location: ${lead.city || 'Unknown'}, ${lead.state || ''} ${lead.country || ''}
 Industry: ${lead.industry || 'Unknown'}
 
-🔥 YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!) 🔥
+YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!)
 
 METHOD 1 - Use Your Knowledge:
 If this is a well-known company, provide the current CEO/owner name from your training data.
 
 METHOD 2 - Pattern Recognition (ALWAYS DO THIS):
 Look at the company name for patterns:
-- "John's Pizza" → Owner likely: "John [Smith]" (pick common last name)
-- "Smith & Associates" → Owner likely: "James Smith" or "Mary Smith"
-- "Chen Restaurant" → Owner likely: "David Chen" or "Lisa Chen"
-- "[Name] + [Business Type]" → That name is probably the owner!
+- "John's Pizza" -> Owner likely: "John [Smith]" (pick common last name)
+- "Smith & Associates" -> Owner likely: "James Smith" or "Mary Smith"
+- "Chen Restaurant" -> Owner likely: "David Chen" or "Lisa Chen"
+- "[Name] + [Business Type]" -> That name is probably the owner!
 
 METHOD 3 - Make Educated Guesses:
 Based on industry and location, suggest a realistic name:
-- Restaurant → Could be chef/owner
-- Law Firm → Partner whose name is in firm
-- Medical/Dental → Doctor whose name is in practice
-- Family business → Family member
+- Restaurant -> Could be chef/owner
+- Law Firm -> Partner whose name is in firm
+- Medical/Dental -> Doctor whose name is in practice
+- Family business -> Family member
 
 METHOD 4 - Regional Patterns:
 Use common names for the region:
-- Italian restaurant → Italian name
-- Chinese restaurant → Chinese name  
-- Irish pub → Irish name
-- Tex-Mex → Hispanic name
+- Italian restaurant -> Italian name
+- Chinese restaurant -> Chinese name
+- Irish pub -> Irish name
+- Tex-Mex -> Hispanic name
 
-🚨 CRITICAL RULES 🚨:
-✅ If company has person's name → USE THAT NAME (make up first/last)
-✅ If no direct info → GUESS based on industry/location/patterns
-✅ Confidence as low as 15-20% is OK - just provide A NAME
-✅ Partial names OK → "John" or "Smith" alone is fine
-✅ ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
+CRITICAL RULES:
+- If company has person's name -> USE THAT NAME (make up first/last)
+- If no direct info -> GUESS based on industry/location/patterns
+- Confidence as low as 15-20% is OK - just provide A NAME
+- Partial names OK -> "John" or "Smith" alone is fine
+- ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
 
 EXAMPLES:
-"Mario's Italian Kitchen" → ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
-"The Smith Law Firm" → ownerName: "Robert Smith", confidence: 50
-"Golden Dragon Restaurant" → ownerName: "David Wong" (guessed Chinese name), confidence: 30
-"Joe's Auto Repair" → ownerName: "Joe Martinez", confidence: 35
+"Mario's Italian Kitchen" -> ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
+"The Smith Law Firm" -> ownerName: "Robert Smith", confidence: 50
+"Golden Dragon Restaurant" -> ownerName: "David Wong" (guessed Chinese name), confidence: 30
+"Joe's Auto Repair" -> ownerName: "Joe Martinez", confidence: 35
 
 Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, confidence}
 
-🎯 REMEMBER: An educated guess is ALWAYS better than "N/A"! 🎯`;
+NOTE: An educated guess is ALWAYS better than "N/A"!`;
 
-        // Use rate limiter to prevent too many simultaneous requests
-        const completion = await rateLimitedChatGPTCall(async () => {
-            return await openai.chat.completions.create({
-                model: "gpt-4o",
-                messages: [
-                    {
-                        role: "system",
-                        content: "You are a business intelligence assistant that verifies and enriches business lead information. Provide accurate, researched data in JSON format."
-                    },
-                    {
-                        role: "user",
-                        content: prompt
-                    }
-                ],
-                temperature: 0.7,
-                max_tokens: 500
-            });
+        const completion = await openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: [
+                {
+                    role: "system",
+                    content: "You are a business intelligence assistant that verifies and enriches business lead information. Provide accurate, researched data in JSON format."
+                },
+                {
+                    role: "user",
+                    content: prompt
+                }
+            ],
+            temperature: 0.7,
+            max_tokens: 500
         });
 
         let response = completion.choices[0].message.content;
@@ -450,58 +347,57 @@ Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, conf
 async function verifyWithClaude(lead) {
     try {
         if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'your_anthropic_claude_api_key_here') {
-            console.log('Anthropic API key not configured, using mock data');
             return null;
         }
 
-        const prompt = `🎯 CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
+        const prompt = `CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
 
 Business: ${lead.companyName}
 Location: ${lead.city || 'Unknown'}, ${lead.state || ''} ${lead.country || ''}
 Industry: ${lead.industry || 'Unknown'}
 
-🔥 YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!) 🔥
+YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!)
 
 METHOD 1 - Use Your Knowledge:
 If this is a well-known company, provide the current CEO/owner name from your training data.
 
 METHOD 2 - Pattern Recognition (ALWAYS DO THIS):
 Look at the company name for patterns:
-- "John's Pizza" → Owner likely: "John [Smith]" (pick common last name)
-- "Smith & Associates" → Owner likely: "James Smith" or "Mary Smith"
-- "Chen Restaurant" → Owner likely: "David Chen" or "Lisa Chen"
-- "[Name] + [Business Type]" → That name is probably the owner!
+- "John's Pizza" -> Owner likely: "John [Smith]" (pick common last name)
+- "Smith & Associates" -> Owner likely: "James Smith" or "Mary Smith"
+- "Chen Restaurant" -> Owner likely: "David Chen" or "Lisa Chen"
+- "[Name] + [Business Type]" -> That name is probably the owner!
 
 METHOD 3 - Make Educated Guesses:
 Based on industry and location, suggest a realistic name:
-- Restaurant → Could be chef/owner
-- Law Firm → Partner whose name is in firm
-- Medical/Dental → Doctor whose name is in practice
-- Family business → Family member
+- Restaurant -> Could be chef/owner
+- Law Firm -> Partner whose name is in firm
+- Medical/Dental -> Doctor whose name is in practice
+- Family business -> Family member
 
 METHOD 4 - Regional Patterns:
 Use common names for the region:
-- Italian restaurant → Italian name
-- Chinese restaurant → Chinese name  
-- Irish pub → Irish name
-- Tex-Mex → Hispanic name
+- Italian restaurant -> Italian name
+- Chinese restaurant -> Chinese name
+- Irish pub -> Irish name
+- Tex-Mex -> Hispanic name
 
-🚨 CRITICAL RULES 🚨:
-✅ If company has person's name → USE THAT NAME (make up first/last)
-✅ If no direct info → GUESS based on industry/location/patterns
-✅ Confidence as low as 15-20% is OK - just provide A NAME
-✅ Partial names OK → "John" or "Smith" alone is fine
-✅ ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
+CRITICAL RULES:
+- If company has person's name -> USE THAT NAME (make up first/last)
+- If no direct info -> GUESS based on industry/location/patterns
+- Confidence as low as 15-20% is OK - just provide A NAME
+- Partial names OK -> "John" or "Smith" alone is fine
+- ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
 
 EXAMPLES:
-"Mario's Italian Kitchen" → ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
-"The Smith Law Firm" → ownerName: "Robert Smith", confidence: 50
-"Golden Dragon Restaurant" → ownerName: "David Wong" (guessed Chinese name), confidence: 30
-"Joe's Auto Repair" → ownerName: "Joe Martinez", confidence: 35
+"Mario's Italian Kitchen" -> ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
+"The Smith Law Firm" -> ownerName: "Robert Smith", confidence: 50
+"Golden Dragon Restaurant" -> ownerName: "David Wong" (guessed Chinese name), confidence: 30
+"Joe's Auto Repair" -> ownerName: "Joe Martinez", confidence: 35
 
 Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, confidence}
 
-🎯 REMEMBER: An educated guess is ALWAYS better than "N/A"! 🎯`;
+NOTE: An educated guess is ALWAYS better than "N/A"!`;
 
         const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
@@ -541,7 +437,6 @@ Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, conf
 
 // Combined AI Verification function
 async function verifyLeadWithAI(lead, preferredAI = 'both') {
-    console.log(`Verifying lead with AI (mode: ${preferredAI})`);
 
     let chatGPTResult = null;
     let claudeResult = null;
@@ -557,7 +452,6 @@ async function verifyLeadWithAI(lead, preferredAI = 'both') {
 
     // If both APIs are not configured, use mock data
     if (!chatGPTResult && !claudeResult) {
-        console.log('No AI APIs configured, using mock verification data');
         return {
             ...lead,
             verified: true,
@@ -658,7 +552,6 @@ async function searchYelpBusinesses(query, location, latitude = null, longitude 
             throw new Error('Yelp API key not configured');
         }
 
-        console.log(`Searching Yelp: "${query}" in ${location || `${latitude},${longitude}`}`);
 
         const searchParams = {
             term: query,
@@ -682,8 +575,6 @@ async function searchYelpBusinesses(query, location, latitude = null, longitude 
             },
             params: searchParams
         });
-
-        console.log(`Yelp returned ${response.data.businesses?.length || 0} businesses`);
 
         // Transform to our lead format
         const leads = (response.data.businesses || []).map(business => ({
@@ -723,11 +614,8 @@ async function getYelpBusinessDetails(yelpId) {
         const apiKey = process.env.YELP_API_KEY;
 
         if (!apiKey) {
-            console.log('Yelp API key not configured');
             return null;
         }
-
-        console.log(`Getting Yelp details for business: ${yelpId}`);
 
         const response = await axios.get(`https://api.yelp.com/v3/businesses/${yelpId}`, {
             headers: {
@@ -772,11 +660,8 @@ async function verifyWithYelp(lead) {
         const apiKey = process.env.YELP_API_KEY;
 
         if (!apiKey) {
-            console.log('Yelp API key not configured, skipping verification');
             return null;
         }
-
-        console.log(`Verifying business with Yelp: ${lead.companyName}`);
 
         // Build match parameters
         const matchParams = {
@@ -825,7 +710,6 @@ async function verifyWithYelp(lead) {
         );
 
         if (!hasEnoughData) {
-            console.log('Insufficient data for Yelp match');
             return null;
         }
 
@@ -838,7 +722,6 @@ async function verifyWithYelp(lead) {
 
         if (response.data.businesses && response.data.businesses.length > 0) {
             const match = response.data.businesses[0];
-            console.log(`✓ Yelp match found: ${match.name} (ID: ${match.id})`);
 
             // Get full details for the matched business
             const details = await getYelpBusinessDetails(match.id);
@@ -852,7 +735,6 @@ async function verifyWithYelp(lead) {
             };
         }
 
-        console.log('No Yelp match found');
         return {
             yelpVerified: false,
             confidence: 0
@@ -876,7 +758,6 @@ async function searchApolloOrganizations(filters) {
             throw new Error('Apollo API key not configured');
         }
 
-        console.log('Searching Apollo organizations with filters:', filters);
 
         const requestBody = {};
 
@@ -918,8 +799,6 @@ async function searchApolloOrganizations(filters) {
             }
         );
 
-        console.log(`Found ${response.data.organizations?.length || 0} organizations`);
-
         // Transform to our lead format
         const leads = (response.data.organizations || []).map(org => ({
             id: Date.now() + Math.random(),
@@ -958,11 +837,8 @@ async function findCompanyOwnerWithPDL(companyName, city = null, state = null, c
         const apiKey = process.env.PDL_API_KEY;
 
         if (!apiKey) {
-            console.log('PDL API key not configured, skipping owner search');
             return null;
         }
-
-        console.log(`Searching for owner of: ${companyName}${city ? ` in ${city}` : ''}`);
 
         // Build SQL query to find owners, CEOs, founders, presidents
         // Use LIKE for better matching (exact match often fails)
@@ -985,8 +861,6 @@ async function findCompanyOwnerWithPDL(companyName, city = null, state = null, c
         // Order by most recent and limit results
         sqlQuery += ` ORDER BY job_start_date DESC LIMIT 10`;
 
-        console.log('PDL SQL Query:', sqlQuery);
-
         const response = await axios.get(
             'https://api.peopledatalabs.com/v5/person/search',
             {
@@ -1004,7 +878,6 @@ async function findCompanyOwnerWithPDL(companyName, city = null, state = null, c
         );
 
         if (response.data.data && response.data.data.length > 0) {
-            console.log(`Found ${response.data.data.length} potential owners/decision-makers`);
 
             // Get the primary owner (first result, usually most relevant)
             const primaryOwner = response.data.data[0];
@@ -1059,14 +932,9 @@ async function findCompanyOwnerWithPDL(companyName, city = null, state = null, c
                 source: 'People Data Labs Person Search'
             };
 
-            console.log(`✓ Found primary owner: ${ownerData.ownerName} (${ownerData.title})`);
-            if (bestEmail) console.log(`  Email: ${bestEmail}`);
-            if (bestPhone) console.log(`  Phone: ${bestPhone}`);
-
             return ownerData;
         }
 
-        console.log('No owners found in PDL database');
         return null;
 
     } catch (error) {
@@ -1085,7 +953,6 @@ async function searchApolloPeople(filters) {
             throw new Error('Apollo API key not configured');
         }
 
-        console.log('Searching Apollo people with filters:', filters);
 
         const requestBody = {};
 
@@ -1128,8 +995,6 @@ async function searchApolloPeople(filters) {
             }
         );
 
-        console.log(`Found ${response.data.contacts?.length || 0} people`);
-
         // Transform to our lead format
         const leads = (response.data.contacts || []).map(person => ({
             id: Date.now() + Math.random(),
@@ -1169,11 +1034,8 @@ async function findEmailsWithHunter(lead) {
         const apiKey = process.env.HUNTER_API_KEY;
 
         if (!apiKey) {
-            console.log('Hunter.io API key not configured, skipping email search');
             return null;
         }
-
-        console.log(`Searching for emails with Hunter.io: ${lead.companyName}`);
 
         // Extract domain from website if available
         let domain = null;
@@ -1186,11 +1048,8 @@ async function findEmailsWithHunter(lead) {
         }
 
         if (!domain) {
-            console.log('No domain available for Hunter.io search');
             return null;
         }
-
-        console.log(`Hunter.io domain search: ${domain}`);
 
         // Use Domain Search endpoint to find emails
         const response = await axios.get('https://api.hunter.io/v2/domain-search', {
@@ -1204,11 +1063,9 @@ async function findEmailsWithHunter(lead) {
         const data = response.data.data;
 
         if (!data || !data.emails || data.emails.length === 0) {
-            console.log('No emails found by Hunter.io');
             return null;
         }
 
-        console.log(`Hunter.io found ${data.emails.length} email(s)`);
 
         // Find the most relevant email (owner, ceo, founder, etc.)
         const ownerEmail = data.emails.find(e =>
@@ -1262,7 +1119,6 @@ async function verifyEmailWithHunter(email) {
             return null;
         }
 
-        console.log(`Verifying email with Hunter.io: ${email}`);
 
         const response = await axios.get('https://api.hunter.io/v2/email-verifier', {
             params: {
@@ -1302,7 +1158,6 @@ async function validatePhoneWithNumverify(phoneNumber) {
         const apiKey = process.env.NUMVERIFY_API_KEY;
 
         if (!apiKey) {
-            console.log('Numverify API key not configured, skipping phone validation');
             return null;
         }
 
@@ -1316,7 +1171,6 @@ async function validatePhoneWithNumverify(phoneNumber) {
             cleanPhone = cleanPhone.substring(2);
         }
 
-        console.log(`Validating phone with Numverify: ${cleanPhone}`);
 
         const response = await axios.get('http://apilayer.net/api/validate', {
             params: {
@@ -1329,7 +1183,6 @@ async function validatePhoneWithNumverify(phoneNumber) {
         const data = response.data;
 
         if (!data.valid) {
-            console.log('Phone number is invalid');
             return {
                 valid: false,
                 number: phoneNumber,
@@ -1337,7 +1190,6 @@ async function validatePhoneWithNumverify(phoneNumber) {
             };
         }
 
-        console.log(`Phone validation successful: ${data.international_format}`);
 
         return {
             valid: data.valid,
@@ -1363,11 +1215,8 @@ async function enrichWithApollo(lead) {
         const apiKey = process.env.APOLLO_API_KEY;
 
         if (!apiKey) {
-            console.log('Apollo API key not configured, skipping enrichment');
             return null;
         }
-
-        console.log(`Enriching lead with Apollo: ${lead.companyName || lead.ownerName}`);
 
         const requestBody = {};
 
@@ -1397,7 +1246,6 @@ async function enrichWithApollo(lead) {
 
         // Check if we have enough data to make a request
         if (!requestBody.email && !requestBody.name && !requestBody.first_name && !requestBody.linkedin_url) {
-            console.log('Insufficient data for Apollo enrichment');
             return null;
         }
 
@@ -1415,11 +1263,8 @@ async function enrichWithApollo(lead) {
 
         const person = response.data.person;
         if (!person) {
-            console.log('No match found in Apollo');
             return null;
         }
-
-        console.log(`Apollo enrichment successful: ${person.name}`);
 
         // Return enriched data
         return {
@@ -1478,7 +1323,6 @@ app.post('/api/scrape', async (req, res) => {
 
         // Use Apollo Search API if requested
         if (useApolloSearch) {
-            console.log('Using Apollo Search API as primary source');
             searchSource = 'Apollo Search';
 
             // Try Apollo Organization Search with auto-pagination
@@ -1507,29 +1351,21 @@ app.post('/api/scrape', async (req, res) => {
                     apolloFilters.locations.push(zipcode);
                 }
 
-                console.log('Apollo filters:', JSON.stringify(apolloFilters, null, 2));
-
                 // Auto-pagination: Fetch multiple pages if needed
                 const targetLeads = maxLeads || 25;
                 const leadsPerPage = Math.min(100, targetLeads); // Max 100 per page
                 const pagesNeeded = Math.ceil(targetLeads / leadsPerPage);
-
-                console.log(`Target: ${targetLeads} leads, ${pagesNeeded} page(s) needed`);
 
                 results = [];
                 for (let page = 1; page <= pagesNeeded && results.length < targetLeads; page++) {
                     apolloFilters.page = page;
                     apolloFilters.perPage = leadsPerPage;
 
-                    console.log(`Fetching Apollo page ${page}/${pagesNeeded}...`);
                     const pageResults = await searchApolloOrganizations(apolloFilters);
-                    console.log(`Apollo page ${page} returned ${pageResults.length} organizations`);
-
                     results = results.concat(pageResults);
 
                     // Stop if we got fewer results than requested (no more available)
                     if (pageResults.length < leadsPerPage) {
-                        console.log('Received fewer results than requested, no more pages available');
                         break;
                     }
 
@@ -1541,16 +1377,13 @@ app.post('/api/scrape', async (req, res) => {
 
                 // Trim to exact target
                 results = results.slice(0, targetLeads);
-                console.log(`Apollo Search completed: ${results.length} organizations (target was ${targetLeads})`);
 
                 // If no results and we used company name, try keywords instead
                 if (results.length === 0 && apolloFilters.companyName) {
-                    console.log('No results with company name, trying as keyword...');
                     delete apolloFilters.companyName;
                     apolloFilters.keywords = [query];
                     apolloFilters.page = 1;
                     results = await searchApolloOrganizations(apolloFilters);
-                    console.log(`Apollo Search with keywords returned ${results.length} organizations`);
                 }
 
             } catch (apolloError) {
@@ -1566,7 +1399,6 @@ app.post('/api/scrape', async (req, res) => {
         // Optionally enrich with Apollo (if enabled and not already from Apollo)
         let enrichedResults = results;
         if (shouldEnrichWithApollo && !useApolloSearch) {
-            console.log(`Enriching ${results.length} leads with Apollo...`);
             enrichedResults = await Promise.all(
                 results.map(async (lead) => {
                     const apolloData = await enrichWithApollo(lead);
@@ -1576,8 +1408,6 @@ app.post('/api/scrape', async (req, res) => {
                     return lead;
                 })
             );
-            const enrichedCount = enrichedResults.filter(r => r.apolloEnriched).length;
-            console.log(`Apollo enriched ${enrichedCount}/${results.length} leads`);
         }
 
         res.json({
@@ -1703,24 +1533,19 @@ app.post('/api/scrape-area', async (req, res) => {
         }
 
         console.log(`Starting area scrape for: ${query}${zipcode ? `, zipcode: ${zipcode}` : ''}${country ? `, country: ${country}` : ''}`);
-        console.log('Area:', JSON.stringify(area, null, 2));
 
         let allResults = [];
         let detectedLocations = [];
 
         // Check if multipolygon - search each polygon separately
         if (area.type === 'multipolygon' && area.polygons && area.polygons.length > 0) {
-            console.log(`Multipolygon detected with ${area.polygons.length} polygons. Searching each separately...`);
-
             // Calculate leads per polygon (distribute more evenly with buffer)
             // Request more per polygon to account for potential deduplication
             const leadsPerPolygon = Math.ceil((maxLeads * 1.5) / area.polygons.length);
-            console.log(`Requesting ${leadsPerPolygon} leads per polygon (with 1.5x buffer for deduplication)`);
 
             // Search each polygon area
             for (let i = 0; i < area.polygons.length; i++) {
                 const polygon = area.polygons[i];
-                console.log(`\nSearching polygon ${i + 1}/${area.polygons.length}...`);
 
                 // Create a single polygon area object
                 const singlePolygonArea = {
@@ -1730,13 +1555,11 @@ app.post('/api/scrape-area', async (req, res) => {
 
                 // Calculate center for this polygon
                 const center = calculateAreaCenter(singlePolygonArea);
-                console.log(`Polygon ${i + 1} center:`, center);
 
                 // Reverse geocode to get location name
                 let location = null;
                 if (center) {
                     location = await reverseGeocode(center.lat, center.lng);
-                    console.log(`Polygon ${i + 1} location: ${location}`);
                     detectedLocations.push(location);
                 }
 
@@ -1745,7 +1568,6 @@ app.post('/api/scrape-area', async (req, res) => {
                 }
 
                 // Search this polygon area
-                console.log(`\n--- Polygon ${i + 1} Search ---`);
                 const polygonResults = await scrapeGoogleMaps(
                     query,
                     location,
@@ -1755,13 +1577,10 @@ app.post('/api/scrape-area', async (req, res) => {
                     leadsPerPolygon
                 );
 
-                console.log(`Polygon ${i + 1} returned ${polygonResults.length}/${leadsPerPolygon} results`);
                 allResults = allResults.concat(polygonResults);
-                console.log(`Running total: ${allResults.length} results from ${i + 1} polygon(s)`);
 
                 // If we already have enough leads, we can stop early
                 if (allResults.length >= maxLeads * 1.2) {
-                    console.log(`Early exit: Already have ${allResults.length} results (target: ${maxLeads})`);
                     break;
                 }
 
@@ -1785,17 +1604,9 @@ app.post('/api/scrape-area', async (req, res) => {
             // Limit to maxLeads
             const finalResults = uniqueResults.slice(0, maxLeads);
 
-            console.log(`\n=== Multi-Polygon Search Complete ===`);
-            console.log(`Total results from all polygons: ${allResults.length}`);
-            console.log(`After removing duplicates: ${uniqueResults.length}`);
-            console.log(`Target was: ${maxLeads}`);
-            console.log(`Final results (limited to ${maxLeads}): ${finalResults.length}`);
-            console.log(`Achievement: ${Math.round((finalResults.length / maxLeads) * 100)}% of target`);
-
             // Optionally enrich with Apollo
             let enrichedResults = finalResults;
             if (shouldEnrichWithApollo) {
-                console.log(`Enriching ${finalResults.length} leads with Apollo...`);
                 enrichedResults = await Promise.all(
                     finalResults.map(async (lead) => {
                         const apolloData = await enrichWithApollo(lead);
@@ -1805,8 +1616,6 @@ app.post('/api/scrape-area', async (req, res) => {
                         return lead;
                     })
                 );
-                const enrichedCount = enrichedResults.filter(r => r.apolloEnriched).length;
-                console.log(`Apollo enriched ${enrichedCount}/${finalResults.length} leads`);
             }
 
             res.json({
@@ -1828,12 +1637,10 @@ app.post('/api/scrape-area', async (req, res) => {
         } else {
             // Single area search (original behavior)
             const center = calculateAreaCenter(area);
-            console.log('Area center:', center);
 
             let location = null;
             if (center) {
                 location = await reverseGeocode(center.lat, center.lng);
-                console.log('Reverse geocoded location:', location);
                 detectedLocations.push(location);
             }
 
@@ -1846,7 +1653,6 @@ app.post('/api/scrape-area', async (req, res) => {
             // Optionally enrich with Apollo
             let enrichedResults = results;
             if (shouldEnrichWithApollo) {
-                console.log(`Enriching ${results.length} leads with Apollo...`);
                 enrichedResults = await Promise.all(
                     results.map(async (lead) => {
                         const apolloData = await enrichWithApollo(lead);
@@ -1856,8 +1662,6 @@ app.post('/api/scrape-area', async (req, res) => {
                         return lead;
                     })
                 );
-                const enrichedCount = enrichedResults.filter(r => r.apolloEnriched).length;
-                console.log(`Apollo enriched ${enrichedCount}/${results.length} leads`);
             }
 
             res.json({
@@ -1896,7 +1700,6 @@ app.post('/api/verify', async (req, res) => {
         }
 
         // Step 1: Try Apollo enrichment first
-        console.log(`Enriching lead: ${lead.companyName || lead.ownerName}`);
         const apolloData = await enrichWithApollo(lead);
 
         // Merge Apollo data with original lead - Accept owner name from Apollo if available
@@ -1907,16 +1710,9 @@ app.post('/api/verify', async (req, res) => {
                 ...apolloData,
                 apolloEnriched: true
             };
-            console.log('Apollo enrichment successful');
-            if (apolloData.ownerName && apolloData.ownerName !== 'N/A') {
-                console.log(`Apollo provided owner name: ${apolloData.ownerName}`);
-            }
-        } else {
-            console.log('Apollo enrichment not available, will use AI only');
         }
 
         // Step 2: Try People Data Labs owner search (PRIORITY SOURCE)
-        console.log('Searching for company owner with PDL...');
         const pdlData = await findCompanyOwnerWithPDL(
             enrichedLead.companyName,
             enrichedLead.city,
@@ -1932,13 +1728,9 @@ app.post('/api/verify', async (req, res) => {
                 ownerDataSource: 'People Data Labs (Verified)',
                 ownerVerified: true
             };
-            console.log(`✅ PDL VERIFIED OWNER: ${pdlData.ownerName} (${pdlData.title})`);
-        } else {
-            console.log('⚠️  PDL could not find verified owner');
         }
 
         // Step 3: Find emails with Hunter.io (SECONDARY SOURCE)
-        console.log('Searching for emails with Hunter.io...');
         const hunterData = await findEmailsWithHunter(enrichedLead);
 
         if (hunterData && hunterData.ownerName && hunterData.ownerName !== 'N/A') {
@@ -1952,27 +1744,18 @@ app.post('/api/verify', async (req, res) => {
                     ownerVerified: true,
                     hunterEnriched: true
                 };
-                console.log(`✅ HUNTER VERIFIED OWNER: ${hunterData.ownerName} (${hunterData.ownerPosition})`);
             } else {
                 enrichedLead.hunterEnriched = true;
-                console.log('Hunter.io data available but PDL owner takes priority');
             }
 
             // Always add email data regardless
             enrichedLead.primaryEmail = hunterData.primaryEmail;
             enrichedLead.emails = hunterData.emails;
             enrichedLead.domain = hunterData.domain;
-
-            if (hunterData.primaryEmail) {
-                console.log(`Hunter.io found primary email: ${hunterData.primaryEmail}`);
-            }
-        } else {
-            console.log('⚠️  Hunter.io could not find verified owner');
         }
 
         // Step 4: Validate phone number with Numverify
         if (enrichedLead.phone && enrichedLead.phone !== 'N/A') {
-            console.log(`Validating phone number: ${enrichedLead.phone}`);
             const phoneValidation = await validatePhoneWithNumverify(enrichedLead.phone);
             if (phoneValidation) {
                 enrichedLead.phoneValidation = phoneValidation;
@@ -1980,12 +1763,10 @@ app.post('/api/verify', async (req, res) => {
                 if (phoneValidation.valid && phoneValidation.internationalFormat) {
                     enrichedLead.phoneFormatted = phoneValidation.internationalFormat;
                 }
-                console.log(`Phone validation complete - Valid: ${phoneValidation.valid}, Type: ${phoneValidation.lineType}`);
             }
         }
 
         // Step 5: Verify with Yelp
-        console.log('Verifying business with Yelp...');
         const yelpData = await verifyWithYelp(enrichedLead);
 
         if (yelpData && yelpData.yelpVerified) {
@@ -1994,24 +1775,17 @@ app.post('/api/verify', async (req, res) => {
                 ...yelpData,
                 yelpEnriched: true
             };
-            console.log('Yelp verification successful');
         }
 
         // Step 6: Use AI verification ONLY if no verified owner found
         const provider = aiProvider || 'both';
 
         if (enrichedLead.ownerVerified) {
-            console.log(`✅ Skipping AI guessing - Already have verified owner: ${enrichedLead.ownerName}`);
-            console.log(`   Source: ${enrichedLead.ownerDataSource}`);
-
             // Just add business details without AI guessing
             enrichedLead.verified = true;
             enrichedLead.aiConfidence = 95; // High confidence from real sources
             res.json(enrichedLead);
         } else {
-            console.log(`⚠️  No verified owner found from PDL/Hunter`);
-            console.log(`   Falling back to AI estimation (mode: ${provider})`);
-
             const verifiedLead = await verifyLeadWithAI(enrichedLead, provider);
 
             // Mark that this is AI estimated, not verified
@@ -2037,8 +1811,6 @@ app.post('/api/apollo/organizations', async (req, res) => {
     try {
         const filters = req.body;
 
-        console.log('Apollo Organizations search request:', filters);
-
         const results = await searchApolloOrganizations(filters);
 
         res.json({
@@ -2061,8 +1833,6 @@ app.post('/api/apollo/organizations', async (req, res) => {
 app.post('/api/apollo/people', async (req, res) => {
     try {
         const filters = req.body;
-
-        console.log('Apollo People search request:', filters);
 
         const results = await searchApolloPeople(filters);
 
@@ -2093,7 +1863,6 @@ app.post('/api/pdl/find-owner', async (req, res) => {
             });
         }
 
-        console.log(`Finding owner for company: ${companyName}`);
 
         const ownerData = await findCompanyOwnerWithPDL(companyName, city, state, country);
 
@@ -2130,7 +1899,6 @@ app.post('/api/apollo/enrich', async (req, res) => {
             });
         }
 
-        console.log('Apollo enrichment request:', lead.companyName || lead.ownerName);
 
         const enrichedData = await enrichWithApollo(lead);
 
@@ -2169,7 +1937,6 @@ app.post('/api/enrich-manual', async (req, res) => {
             });
         }
 
-        console.log(`Enriching manual lead with data:`, manualData);
 
         let scrapedResults = [];
         let searchMethod = 'unknown';
@@ -2183,7 +1950,6 @@ app.post('/api/enrich-manual', async (req, res) => {
 
             // Strategy 1: Search by phone number if provided
             if (manualData.phone && manualData.phone.trim()) {
-                console.log(`Searching by phone number: ${manualData.phone}`);
                 searchMethod = 'phone';
 
                 try {
@@ -2212,11 +1978,10 @@ app.post('/api/enrich-manual', async (req, res) => {
                         if (detailsResponse.data.status === 'OK') {
                             const details = detailsResponse.data.result;
                             scrapedResults.push(convertPlaceDetailsToLead(details, placeId));
-                            console.log(`Found business by phone: ${details.name}`);
                         }
                     }
                 } catch (phoneError) {
-                    console.log('Phone search failed:', phoneError.message);
+                    console.error('Phone search failed:', phoneError.message);
                 }
             }
 
@@ -2234,7 +1999,6 @@ app.post('/api/enrich-manual', async (req, res) => {
                     addressQuery += ` ${manualData.country}`;
                 }
 
-                console.log(`Searching by address: ${addressQuery}`);
                 searchMethod = 'address';
 
                 // Use text search to find businesses at the address
@@ -2267,13 +2031,11 @@ app.post('/api/enrich-manual', async (req, res) => {
                         await delay(100);
                     }
 
-                    console.log(`Found ${scrapedResults.length} businesses at address`);
                 }
             }
 
             // Strategy 3: Search by company name if provided
             if (scrapedResults.length === 0 && manualData.companyName && manualData.companyName.trim()) {
-                console.log(`Searching by company name: ${manualData.companyName}`);
                 searchMethod = 'company_name';
 
                 // Build location string
@@ -2297,7 +2059,7 @@ app.post('/api/enrich-manual', async (req, res) => {
             }
 
         } catch (scrapeError) {
-            console.log('Scraping failed, will use manual data only:', scrapeError.message);
+            console.error('Scraping failed, will use manual data only:', scrapeError.message);
         }
 
         // Find best match from scraped results
@@ -2338,10 +2100,8 @@ app.post('/api/enrich-manual', async (req, res) => {
                 reviewCount: bestMatch.reviewCount
             };
 
-            console.log(`Found match: ${bestMatch.companyName} (via ${searchMethod})`);
         } else {
             // No results from scraping, use whatever manual data was provided
-            console.log('No scraping results, using manual data only');
             enrichedLead.companyName = manualData.companyName || 'Unknown Business';
         }
 
@@ -2353,7 +2113,6 @@ app.post('/api/enrich-manual', async (req, res) => {
         verifiedLead.scrapedDataAvailable = scrapedResults.length > 0;
         verifiedLead.searchMethod = searchMethod;
 
-        console.log(`Successfully enriched lead: ${verifiedLead.companyName}`);
 
         res.json(verifiedLead);
 
@@ -2521,13 +2280,6 @@ function convertPlaceDetailsToLead(details, placeId) {
 app.get('/api/ai-status', (req, res) => {
     // Check if OpenAI key is configured and valid (not a placeholder)
     const openaiKey = process.env.OPENAI_API_KEY;
-    console.log('OpenAI Key Check:', {
-        exists: !!openaiKey,
-        length: openaiKey?.length,
-        starts: openaiKey?.substring(0, 10),
-        startsWithSk: openaiKey?.startsWith('sk-'),
-        startsWithSkProj: openaiKey?.startsWith('sk-proj-')
-    });
 
     // Simplified validation - just check if key exists and starts with sk-
     const openaiConfigured = openaiKey &&
@@ -2702,11 +2454,11 @@ app.use((error, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`🚀 Lead Scraper Backend running on port ${PORT}`);
-    console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
-    console.log(`🔍 Scrape endpoint: http://localhost:${PORT}/api/scrape`);
-    console.log(`�️  Area scrape endpoint: http://localhost:${PORT}/api/scrape-area`);
-    console.log(`✅ Verify endpoint: http://localhost:${PORT}/api/verify`);
+    console.log(`Lead Scraper Backend running on port ${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/api/health`);
+    console.log(`Scrape endpoint: http://localhost:${PORT}/api/scrape`);
+    console.log(`Area scrape endpoint: http://localhost:${PORT}/api/scrape-area`);
+    console.log(`Verify endpoint: http://localhost:${PORT}/api/verify`);
 });
 
 module.exports = app;
