@@ -20,7 +20,7 @@ The application now includes People Data Labs Person Search API integration to f
 The PDL API key has been added to `.env`:
 
 ```env
-PDL_API_KEY=f9bb8bd37128ead92c222abbc054b05aa7fad0f77ff56e5b88b9f992b432a277
+PDL_API_KEY=
 ```
 
 ### People Data Labs Account
