@@ -26,6 +26,8 @@ app.use(cors({
     origin: [
         'http://localhost:3000',
         'http://localhost:3001',
+        'http://localhost:3004',
+        'http://localhost:3005',
         'https://lead-scraper-frontend-372172131227.us-central1.run.app',
         process.env.FRONTEND_URL
     ].filter(Boolean),
@@ -62,8 +64,24 @@ const generateMockLead = (companyName, phone = null, address = null, zipcode = n
     reviewCount: Math.floor(Math.random() * 500 + 10)
 });
 
-// Google Places API function to get real business data
-async function scrapeGoogleMaps(query, location, area = null, zipcode = null, country = null, maxLeads = 10) {
+// Dispatcher: picks legacy or new Google Places API based on env toggle, with auto-fallback
+async function scrapeGoogleMaps(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
+    const mode = (process.env.GOOGLE_PLACES_MODE || 'legacy').toLowerCase();
+    if (mode === 'new') {
+        try {
+            console.log(`[Places API] Using NEW API for: "${query}" (maxLeads: ${maxLeads})`);
+            return await scrapeGoogleMapsNew(query, location, area, zipcode, country, maxLeads);
+        } catch (err) {
+            console.warn(`[Places API] New API failed (${err.message}), falling back to legacy`);
+            return scrapeGoogleMapsLegacy(query, location, area, zipcode, country, maxLeads);
+        }
+    }
+    console.log(`[Places API] Using LEGACY API for: "${query}" (maxLeads: ${maxLeads})`);
+    return scrapeGoogleMapsLegacy(query, location, area, zipcode, country, maxLeads);
+}
+
+// Google Places API (Legacy) function to get real business data
+async function scrapeGoogleMapsLegacy(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
     try {
         const apiKey = process.env.GOOGLE_PLACES_API_KEY;
 
@@ -136,22 +154,31 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
 
             const requestParams = { ...searchParams };
             if (nextPageToken) {
-                // For pagination, only use pagetoken and key
+                requestParams.pagetoken = nextPageToken;
                 delete requestParams.query;
                 delete requestParams.locationbias;
                 delete requestParams.radius;
-                requestParams.pagetoken = nextPageToken;
             }
 
-            const textSearchResponse = await axios.get(textSearchUrl, {
-                params: requestParams
-            });
+            let textSearchResponse;
+            const maxRetries = 3;
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                textSearchResponse = await axios.get(textSearchUrl, {
+                    params: requestParams
+                });
+
+                if (textSearchResponse.data.status === 'INVALID_REQUEST' && nextPageToken && attempt < maxRetries) {
+                    console.log(`Page ${pageCount}: token not ready yet, retry ${attempt}/${maxRetries} (waiting ${attempt * 2}s)`);
+                    await delay(attempt * 2000);
+                    continue;
+                }
+                break;
+            }
 
             if (textSearchResponse.data.status !== 'OK' && textSearchResponse.data.status !== 'ZERO_RESULTS') {
                 console.error('Google Places API error:', textSearchResponse.data.status);
                 console.error('Error message:', textSearchResponse.data.error_message);
                 if (allPlaces.length > 0) {
-                    // If we already have some results, return them
                     break;
                 }
                 throw new Error(`Google Places API error: ${textSearchResponse.data.status}`);
@@ -162,23 +189,20 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
             }
 
             allPlaces = allPlaces.concat(textSearchResponse.data.results);
+            console.log(`Page ${pageCount}: got ${textSearchResponse.data.results.length} results (total: ${allPlaces.length})`);
 
             nextPageToken = textSearchResponse.data.next_page_token;
 
-            // Check if we have enough results
             if (allPlaces.length >= maxLeads) {
                 break;
             }
 
-            // Check if we've hit the page limit
             if (pageCount >= maxPages) {
                 break;
             }
 
-            // If there's a next page token, wait before requesting it
-            // Google requires a short delay before the token becomes valid
             if (nextPageToken) {
-                await delay(2000); // 2 second delay between pages
+                await delay(3000);
             }
 
         } while (nextPageToken && allPlaces.length < maxLeads);
@@ -249,6 +273,176 @@ async function scrapeGoogleMaps(query, location, area = null, zipcode = null, co
         console.error('Google Places API error:', error.message);
         throw new Error(`Failed to fetch data from Google Places API: ${error.message}`);
     }
+}
+
+// Google Places API (New) - Text Search with reliable pagination
+async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
+    try {
+        const apiKey = process.env.GOOGLE_PLACES_NEW_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
+
+        if (!apiKey) {
+            throw new Error('Google Places API key not configured');
+        }
+
+        let searchQuery = query;
+        let effectiveQuery = query;
+        if (query.toLowerCase() === 'all' || query.toLowerCase() === 'any') {
+            effectiveQuery = 'business';
+        }
+
+        if (location && !area) {
+            searchQuery = `${effectiveQuery} in ${location}`;
+        } else if (location && area) {
+            searchQuery = `${effectiveQuery} in ${location}`;
+        } else {
+            searchQuery = effectiveQuery;
+        }
+
+        if (zipcode) searchQuery += ` ${zipcode}`;
+        if (country) searchQuery += ` ${country}`;
+
+        const textSearchUrl = 'https://places.googleapis.com/v1/places:searchText';
+
+        let locationBias = undefined;
+        if (area && area.type) {
+            const center = calculateAreaCenter(area);
+            if (center) {
+                locationBias = {
+                    circle: {
+                        center: { latitude: center.lat, longitude: center.lng },
+                        radius: (area.radius ? Math.min(area.radius, 50000) : 20000)
+                    }
+                };
+            }
+        }
+
+        let allPlaces = [];
+        let nextPageToken = null;
+        let pageCount = 0;
+        const maxPages = 3;
+        const pageSize = 20;
+
+        do {
+            pageCount++;
+
+            const requestBody = {
+                textQuery: searchQuery,
+                pageSize: pageSize
+            };
+
+            if (locationBias) {
+                requestBody.locationBias = locationBias;
+            }
+
+            if (nextPageToken) {
+                requestBody.pageToken = nextPageToken;
+            }
+
+            const response = await axios.post(textSearchUrl, requestBody, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey,
+                    'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.internationalPhoneNumber,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.types,places.location,places.addressComponents,nextPageToken'
+                }
+            });
+
+            const places = response.data.places || [];
+            if (places.length === 0) break;
+
+            allPlaces = allPlaces.concat(places);
+            console.log(`[New API] Page ${pageCount}: got ${places.length} results (total: ${allPlaces.length})`);
+
+            nextPageToken = response.data.nextPageToken || null;
+
+            if (allPlaces.length >= maxLeads) break;
+            if (pageCount >= maxPages) break;
+
+            if (nextPageToken) {
+                await delay(1000);
+            }
+
+        } while (nextPageToken && allPlaces.length < maxLeads);
+
+        if (allPlaces.length === 0) return [];
+
+        const results = [];
+        const places = allPlaces.slice(0, maxLeads);
+
+        for (const place of places) {
+            try {
+                results.push(convertNewPlaceToLead(place));
+            } catch (err) {
+                console.error('Error converting place:', err.message);
+            }
+        }
+
+        return results;
+
+    } catch (error) {
+        console.error('Google Places API (New) error:', error.response?.data || error.message);
+        throw new Error(`Failed to fetch data from Google Places API (New): ${error.message}`);
+    }
+}
+
+function convertNewPlaceToLead(place) {
+    const addressComponents = place.addressComponents || [];
+    let extractedZipcode = '';
+    let extractedCity = '';
+    let extractedCountry = '';
+    let extractedState = '';
+
+    addressComponents.forEach(component => {
+        if (component.types.includes('postal_code')) {
+            extractedZipcode = component.longText || component.shortText || '';
+        }
+        if (component.types.includes('locality')) {
+            extractedCity = component.longText || '';
+        }
+        if (component.types.includes('country')) {
+            extractedCountry = component.longText || '';
+        }
+        if (component.types.includes('administrative_area_level_1')) {
+            extractedState = component.shortText || '';
+        }
+    });
+
+    const cleanedPhone = cleanPhoneNumber(place.nationalPhoneNumber || place.internationalPhoneNumber);
+    const cleanedZipcode = cleanZipcode(extractedZipcode);
+    const cleanedAddress = cleanAddress(place.formattedAddress || '');
+
+    const types = place.types || [];
+    let industry = 'Business';
+    if (types.includes('restaurant')) industry = 'Restaurant';
+    else if (types.includes('store') || types.includes('retail')) industry = 'Retail';
+    else if (types.includes('hospital') || types.includes('doctor')) industry = 'Healthcare';
+    else if (types.includes('lawyer')) industry = 'Legal Services';
+    else if (types.includes('real_estate_agency')) industry = 'Real Estate';
+    else if (types.includes('cafe') || types.includes('bakery')) industry = 'Food & Beverage';
+    else if (types.includes('gym')) industry = 'Fitness';
+    else if (types.includes('beauty_salon') || types.includes('spa')) industry = 'Beauty & Wellness';
+    else if (types.length > 0) {
+        industry = types[0].replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    return {
+        id: Date.now() + Math.random(),
+        companyName: place.displayName?.text || 'N/A',
+        phone: cleanedPhone,
+        address: cleanedAddress,
+        zipcode: cleanedZipcode,
+        city: extractedCity || 'N/A',
+        country: extractedCountry || 'N/A',
+        state: extractedState || '',
+        industry: industry,
+        website: place.websiteUri || 'N/A',
+        rating: place.rating || 'N/A',
+        reviewCount: place.userRatingCount || 0,
+        latitude: place.location?.latitude || null,
+        longitude: place.location?.longitude || null,
+        placeId: place.id || null,
+        types: types,
+        source: 'Google Places API (New)'
+    };
 }
 
 // AI Verification with ChatGPT
@@ -1389,11 +1583,11 @@ app.post('/api/scrape', async (req, res) => {
             } catch (apolloError) {
                 console.error('Apollo Search failed, falling back to Google Places:', apolloError.message);
                 searchSource = 'Google Places (Apollo fallback)';
-                results = await scrapeGoogleMaps(query, location, null, zipcode, country, maxLeads || 10);
+                results = await scrapeGoogleMaps(query, location, null, zipcode, country, maxLeads || 60);
             }
         } else {
             // Use Google Places as default
-            results = await scrapeGoogleMaps(query, location, null, zipcode, country, maxLeads || 10);
+            results = await scrapeGoogleMaps(query, location, null, zipcode, country, maxLeads || 60);
         }
 
         // Optionally enrich with Apollo (if enabled and not already from Apollo)
@@ -1648,7 +1842,7 @@ app.post('/api/scrape-area', async (req, res) => {
                 location = `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
             }
 
-            const results = await scrapeGoogleMaps(query, location, area, zipcode, country, maxLeads || 10);
+            const results = await scrapeGoogleMaps(query, location, area, zipcode, country, maxLeads || 60);
 
             // Optionally enrich with Apollo
             let enrichedResults = results;

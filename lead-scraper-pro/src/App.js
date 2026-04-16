@@ -12,7 +12,7 @@ export default function App() {
   const [zipcode, setZipcode] = useState('');
   const [mapQuery, setMapQuery] = useState('');
   const [mapSearchInput, setMapSearchInput] = useState('');
-  const [maxLeads, setMaxLeads] = useState(10);
+  const [maxLeads, setMaxLeads] = useState(60);
   const [useApolloSearch, setUseApolloSearch] = useState(false);
   const [useYelpSearch, setUseYelpSearch] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
