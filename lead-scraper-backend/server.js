@@ -23,14 +23,19 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(helmet());
 app.use(cors({
-    origin: [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://localhost:3004',
-        'http://localhost:3005',
-        'https://lead-scraper-frontend-372172131227.us-central1.run.app',
-        process.env.FRONTEND_URL
-    ].filter(Boolean),
+    origin: function(origin, callback) {
+        const allowed = [
+            'http://localhost:3005',
+            'https://lead-scraper-frontend-372172131227.us-central1.run.app',
+            process.env.FRONTEND_URL
+        ].filter(Boolean);
+
+        if (!origin || allowed.includes(origin) || origin.endsWith('.run.app')) {
+            callback(null, true);
+        } else {
+            callback(null, false);
+        }
+    },
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -64,20 +69,146 @@ const generateMockLead = (companyName, phone = null, address = null, zipcode = n
     reviewCount: Math.floor(Math.random() * 500 + 10)
 });
 
-// Dispatcher: picks legacy or new Google Places API based on env toggle, with auto-fallback
-async function scrapeGoogleMaps(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
+// Forward geocode a text location to lat/lng using Google Geocoding API
+async function forwardGeocode(location) {
+    try {
+        const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+        if (!apiKey) return null;
+
+        const response = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
+            params: { address: location, key: apiKey }
+        });
+
+        if (response.data.status === 'OK' && response.data.results.length > 0) {
+            const loc = response.data.results[0].geometry.location;
+            return { lat: loc.lat, lng: loc.lng };
+        }
+        return null;
+    } catch (error) {
+        console.error('Forward geocoding error:', error.message);
+        return null;
+    }
+}
+
+// Generate non-overlapping rectangular grid cells covering a wide area
+function generateSearchGrid(center, numCells) {
+    const degPerKm = 1 / 111;
+    const lngDegPerKm = degPerKm / Math.cos(center.lat * Math.PI / 180);
+    const cellSizeKm = 6;
+
+    if (numCells <= 1) {
+        const halfLat = (cellSizeKm / 2) * degPerKm;
+        const halfLng = (cellSizeKm / 2) * lngDegPerKm;
+        return [{
+            south: center.lat - halfLat, north: center.lat + halfLat,
+            west: center.lng - halfLng, east: center.lng + halfLng
+        }];
+    }
+
+    const side = Math.ceil(Math.sqrt(numCells));
+    const totalWidthKm = side * cellSizeKm;
+    const startLat = center.lat - ((totalWidthKm / 2) * degPerKm);
+    const startLng = center.lng - ((totalWidthKm / 2) * lngDegPerKm);
+
+    const cells = [];
+    for (let row = 0; row < side && cells.length < numCells; row++) {
+        for (let col = 0; col < side && cells.length < numCells; col++) {
+            cells.push({
+                south: startLat + (row * cellSizeKm * degPerKm),
+                north: startLat + ((row + 1) * cellSizeKm * degPerKm),
+                west: startLng + (col * cellSizeKm * lngDegPerKm),
+                east: startLng + ((col + 1) * cellSizeKm * lngDegPerKm)
+            });
+        }
+    }
+
+    return cells;
+}
+
+// Single-cell scrape dispatcher (legacy or new, no subdivision)
+async function scrapeGoogleMapsSingle(query, location, area, zipcode, country, maxLeads, restriction = null) {
     const mode = (process.env.GOOGLE_PLACES_MODE || 'legacy').toLowerCase();
     if (mode === 'new') {
         try {
-            console.log(`[Places API] Using NEW API for: "${query}" (maxLeads: ${maxLeads})`);
-            return await scrapeGoogleMapsNew(query, location, area, zipcode, country, maxLeads);
+            return await scrapeGoogleMapsNew(query, location, area, zipcode, country, maxLeads, restriction);
         } catch (err) {
             console.warn(`[Places API] New API failed (${err.message}), falling back to legacy`);
             return scrapeGoogleMapsLegacy(query, location, area, zipcode, country, maxLeads);
         }
     }
-    console.log(`[Places API] Using LEGACY API for: "${query}" (maxLeads: ${maxLeads})`);
     return scrapeGoogleMapsLegacy(query, location, area, zipcode, country, maxLeads);
+}
+
+// Main dispatcher: auto-subdivides into grid cells when maxLeads > 60
+async function scrapeGoogleMaps(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
+    const GOOGLE_PAGE_LIMIT = 60;
+
+    if (maxLeads <= GOOGLE_PAGE_LIMIT) {
+        console.log(`[Places API] Single search for: "${query}" (maxLeads: ${maxLeads})`);
+        return scrapeGoogleMapsSingle(query, location, area, zipcode, country, maxLeads);
+    }
+
+    // Auto-subdivision: use more cells than strictly needed to account for overlap/dedup
+    const numCells = Math.ceil((maxLeads * 1.5) / GOOGLE_PAGE_LIMIT);
+    console.log(`[Places API] Auto-subdividing: "${query}" into ${numCells} grid cells for ${maxLeads} leads`);
+
+    let center = null;
+    if (area && area.type) {
+        center = calculateAreaCenter(area);
+    }
+    if (!center) {
+        const geoQuery = [location, zipcode, country].filter(Boolean).join(' ');
+        if (geoQuery) {
+            center = await forwardGeocode(geoQuery);
+        }
+    }
+
+    if (!center) {
+        console.warn('[Places API] Could not determine center for grid subdivision, falling back to single search');
+        return scrapeGoogleMapsSingle(query, location, area, zipcode, country, maxLeads);
+    }
+
+    const gridCells = generateSearchGrid(center, numCells);
+    const leadsPerCell = GOOGLE_PAGE_LIMIT;
+
+    const allResults = [];
+    const seenPlaceIds = new Set();
+
+    for (let i = 0; i < gridCells.length; i++) {
+        const cell = gridCells[i];
+        const cellCenter = {
+            lat: ((cell.south + cell.north) / 2).toFixed(4),
+            lng: ((cell.west + cell.east) / 2).toFixed(4)
+        };
+
+        console.log(`[Grid ${i + 1}/${gridCells.length}] Rect [${cell.south.toFixed(4)},${cell.west.toFixed(4)} → ${cell.north.toFixed(4)},${cell.east.toFixed(4)}] center ~${cellCenter.lat},${cellCenter.lng}`);
+
+        try {
+            const cellResults = await scrapeGoogleMapsSingle(query, location, area, zipcode, country, leadsPerCell, cell);
+
+            let added = 0;
+            for (const result of cellResults) {
+                const id = result.placeId || `${result.companyName}-${result.address}`;
+                if (!seenPlaceIds.has(id)) {
+                    seenPlaceIds.add(id);
+                    allResults.push(result);
+                    added++;
+                }
+            }
+            console.log(`[Grid ${i + 1}/${gridCells.length}] Got ${cellResults.length} results, ${added} new unique (total: ${allResults.length})`);
+        } catch (err) {
+            console.error(`[Grid ${i + 1}/${gridCells.length}] Failed: ${err.message}`);
+        }
+
+        if (allResults.length >= maxLeads) break;
+
+        if (i < gridCells.length - 1) {
+            await delay(500);
+        }
+    }
+
+    console.log(`[Places API] Grid search complete: ${allResults.length} unique results from ${gridCells.length} cells`);
+    return allResults.slice(0, maxLeads);
 }
 
 // Google Places API (Legacy) function to get real business data
@@ -276,7 +407,7 @@ async function scrapeGoogleMapsLegacy(query, location, area = null, zipcode = nu
 }
 
 // Google Places API (New) - Text Search with reliable pagination
-async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
+async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null, country = null, maxLeads = 60, restriction = null) {
     try {
         const apiKey = process.env.GOOGLE_PLACES_NEW_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
 
@@ -290,7 +421,9 @@ async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null,
             effectiveQuery = 'business';
         }
 
-        if (location && !area) {
+        if (restriction) {
+            searchQuery = effectiveQuery;
+        } else if (location && !area) {
             searchQuery = `${effectiveQuery} in ${location}`;
         } else if (location && area) {
             searchQuery = `${effectiveQuery} in ${location}`;
@@ -298,13 +431,24 @@ async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null,
             searchQuery = effectiveQuery;
         }
 
-        if (zipcode) searchQuery += ` ${zipcode}`;
-        if (country) searchQuery += ` ${country}`;
+        if (!restriction) {
+            if (zipcode) searchQuery += ` ${zipcode}`;
+            if (country) searchQuery += ` ${country}`;
+        }
 
         const textSearchUrl = 'https://places.googleapis.com/v1/places:searchText';
 
+        let locationRestriction = undefined;
         let locationBias = undefined;
-        if (area && area.type) {
+
+        if (restriction) {
+            locationRestriction = {
+                rectangle: {
+                    low: { latitude: restriction.south, longitude: restriction.west },
+                    high: { latitude: restriction.north, longitude: restriction.east }
+                }
+            };
+        } else if (area && area.type) {
             const center = calculateAreaCenter(area);
             if (center) {
                 locationBias = {
@@ -330,7 +474,9 @@ async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null,
                 pageSize: pageSize
             };
 
-            if (locationBias) {
+            if (locationRestriction) {
+                requestBody.locationRestriction = locationRestriction;
+            } else if (locationBias) {
                 requestBody.locationBias = locationBias;
             }
 
@@ -392,16 +538,17 @@ function convertNewPlaceToLead(place) {
     let extractedState = '';
 
     addressComponents.forEach(component => {
-        if (component.types.includes('postal_code')) {
+        const types = component.types || [];
+        if (types.includes('postal_code')) {
             extractedZipcode = component.longText || component.shortText || '';
         }
-        if (component.types.includes('locality')) {
+        if (types.includes('locality')) {
             extractedCity = component.longText || '';
         }
-        if (component.types.includes('country')) {
+        if (types.includes('country')) {
             extractedCountry = component.longText || '';
         }
-        if (component.types.includes('administrative_area_level_1')) {
+        if (types.includes('administrative_area_level_1')) {
             extractedState = component.shortText || '';
         }
     });
@@ -1052,8 +1199,7 @@ async function findCompanyOwnerWithPDL(companyName, city = null, state = null, c
         // Focus on decision-makers and owners with broader title search
         sqlQuery += ` AND (job_title LIKE '%CEO%' OR job_title LIKE '%Owner%' OR job_title LIKE '%Founder%' OR job_title LIKE '%President%' OR job_title LIKE '%Partner%')`;
 
-        // Order by most recent and limit results
-        sqlQuery += ` ORDER BY job_start_date DESC LIMIT 10`;
+        // size param handles result count; LIMIT/ORDER BY not supported in PDL SQL
 
         const response = await axios.get(
             'https://api.peopledatalabs.com/v5/person/search',
