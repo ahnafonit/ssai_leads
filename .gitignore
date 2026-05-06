@@ -3,10 +3,14 @@ node_modules/
 lead-scraper-pro/node_modules/
 lead-scraper-backend/node_modules/
 
-# Environment variables
+# Environment variables (any directory; allow committed templates)
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 *.env
-lead-scraper-backend/.env
+!*.env.example
 
 # Logs
 *.log
