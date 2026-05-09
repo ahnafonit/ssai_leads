@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Building2, Search, Download, Trash2, Upload, Check, X, Loader, MapPin } from 'lucide-react';
+import { Building2, Search, Download, Trash2, X, Loader, MapPin, Plus } from 'lucide-react';
 
 export default function App() {
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
@@ -13,15 +13,15 @@ export default function App() {
   const [mapQuery, setMapQuery] = useState('');
   const [mapSearchInput, setMapSearchInput] = useState('');
   const [maxLeads, setMaxLeads] = useState(60);
-  const [useApolloSearch, setUseApolloSearch] = useState(false);
-  const [useYelpSearch, setUseYelpSearch] = useState(false);
+  /** When true, backend runs Smarty RDI / residence classification after Google discovery (US addresses). */
+  const [classifyResidence, setClassifyResidence] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeTab, setActiveTab] = useState('map');
   const [selectedArea, setSelectedArea] = useState(null);
   const [areaDetails, setAreaDetails] = useState('');
-  const [aiStatus, setAiStatus] = useState({ openai: { configured: false }, claude: { configured: false }, apollo: { configured: false } });
   const [leafletLoaded, setLeafletLoaded] = useState(false);
-  const [verificationStatus, setVerificationStatus] = useState(null);
+  const [backendHealth, setBackendHealth] = useState(null);
+  const [lastScrapeInfo, setLastScrapeInfo] = useState(null);
 
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -75,30 +75,21 @@ export default function App() {
     document.head.appendChild(script);
   }, [leafletLoaded]);
 
-  // Fetch AI status on component mount
   useEffect(() => {
-    const fetchAIStatus = async () => {
+    let cancelled = false;
+    (async () => {
       try {
-        const response = await fetch(`${API_URL}/api/ai-status`);
+        const response = await fetch(`${API_URL}/api/health`);
         const data = await response.json();
-        setAiStatus(data);
-      } catch (error) {
-        console.error('Error fetching AI status:', error);
+        if (!cancelled) {
+          setBackendHealth(response.ok ? { ok: true, ...data } : { ok: false });
+        }
+      } catch {
+        if (!cancelled) setBackendHealth({ ok: false });
       }
-    };
-    fetchAIStatus();
+    })();
+    return () => { cancelled = true; };
   }, [API_URL]);
-
-  const [formData, setFormData] = useState({
-    companyName: '',
-    industry: '',
-    ownerName: '',
-    phone: '',
-    address: '',
-    zipcode: '',
-    city: '',
-    country: ''
-  });
 
   // Initialize Google Map
   useEffect(() => {
@@ -498,38 +489,13 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     });
   };
 
-  const handleFormChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
-
-  const handleManualAdd = async () => {
-    // Check if at least one field is filled
-    const hasData = Object.values(formData).some(value => value.trim() !== '');
-    if (!hasData) {
-      alert('Please enter at least one field');
-      return;
-    }
-    setIsProcessing(true);
-    try {
-      const response = await fetch(`${API_URL}/api/enrich-manual`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      });
-      const enrichedLead = await response.json();
-      if (enrichedLead.error) {
-        alert(enrichedLead.error);
-        return;
-      }
-      setScrapedData([{ ...enrichedLead, source: 'manual-enriched' }, ...scrapedData]);
-      setFormData({ companyName: '', industry: '', ownerName: '', phone: '', address: '', zipcode: '', city: '', country: '' });
-    } catch (error) {
-      console.error('Enrichment error:', error);
-      alert('Error enriching lead');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+  const scrapeRequestBody = () => ({
+    country,
+    zipcode,
+    maxLeads: Number(maxLeads) || 60,
+    classifyResidence,
+    ...(classifyResidence ? { residenceClassificationOptions: {} } : {})
+  });
 
   const handleScrape = async () => {
     if (!searchQuery || !location) {
@@ -537,6 +503,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
       return;
     }
     setIsProcessing(true);
+    setLastScrapeInfo(null);
     try {
       const response = await fetch(`${API_URL}/api/scrape`, {
         method: 'POST',
@@ -544,14 +511,20 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
         body: JSON.stringify({
           query: searchQuery,
           location,
-          country,
-          zipcode,
-          maxLeads: maxLeads || 10,
-          useApolloSearch: useApolloSearch
+          ...scrapeRequestBody()
         })
       });
       const data = await response.json();
+      if (data.error) {
+        alert(data.error);
+        return;
+      }
       setScrapedData(data.results || []);
+      setLastScrapeInfo({
+        residenceClassificationRan: data.residenceClassificationRan,
+        ignoredFlags: data.ignoredFlags || [],
+        count: data.count
+      });
     } catch (error) {
       console.error('Scraping error:', error);
       alert('Error scraping data');
@@ -570,14 +543,28 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
       return;
     }
     setIsProcessing(true);
+    setLastScrapeInfo(null);
     try {
       const response = await fetch(`${API_URL}/api/scrape-area`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: mapQuery, area: selectedArea, country, zipcode, maxLeads: maxLeads || 10, useApolloSearch: useApolloSearch })
+        body: JSON.stringify({
+          query: mapQuery,
+          area: selectedArea,
+          ...scrapeRequestBody()
+        })
       });
       const data = await response.json();
+      if (data.error) {
+        alert(data.error);
+        return;
+      }
       setScrapedData(data.results || []);
+      setLastScrapeInfo({
+        residenceClassificationRan: data.residenceClassificationRan,
+        ignoredFlags: data.ignoredFlags || [],
+        count: data.count
+      });
     } catch (error) {
       console.error('Scraping error:', error);
       alert('Error scraping data');
@@ -586,105 +573,15 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
     }
   };
 
-  const verifyWithAI = async (lead) => {
-    setIsProcessing(true);
-    const total = scrapedData.length;
-    const current = 1;
-
-    // Step 1: Apollo enrichment
-    setVerificationStatus({ companyName: lead.companyName, status: 'apollo', current, total });
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Step 2: PDL owner search
-    setVerificationStatus({ companyName: lead.companyName, status: 'pdl', current, total });
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Step 3: Numverify phone validation
-    setVerificationStatus({ companyName: lead.companyName, status: 'numverify', current, total });
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Step 4: Yelp verification
-    setVerificationStatus({ companyName: lead.companyName, status: 'yelp', current, total });
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Step 5: Hunter email enrichment
-    setVerificationStatus({ companyName: lead.companyName, status: 'hunter', current, total });
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Step 6: Claude verification
-    setVerificationStatus({ companyName: lead.companyName, status: 'claude', current, total });
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Step 7: ChatGPT verification
-    setVerificationStatus({ companyName: lead.companyName, status: 'chatgpt', current, total });
-
-    try {
-      const response = await fetch(`${API_URL}/api/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lead })
-      });
-      const enrichedLead = await response.json();
-      setScrapedData(scrapedData.filter(l => l.id !== lead.id));
-      setLeads([{ ...enrichedLead, verified: true }, ...leads]);
-    } catch (error) {
-      console.error('Verification error:', error);
-      alert('Error verifying lead');
-    } finally {
-      setIsProcessing(false);
-      setVerificationStatus(null);
-    }
+  const saveLeadToList = (lead) => {
+    setLeads(prev => [{ ...lead, savedAt: new Date().toISOString() }, ...prev]);
+    setScrapedData(prev => prev.filter(l => l.id !== lead.id));
   };
 
-  const verifyAllLeads = async () => {
-    if (scrapedData.length === 0) return;
-    setIsProcessing(true);
-    const total = scrapedData.length;
-    try {
-      const verifiedLeads = [];
-      for (let i = 0; i < scrapedData.length; i++) {
-        const lead = scrapedData[i];
-        const current = i + 1;
-        try {
-          // Step 1: Apollo enrichment
-          setVerificationStatus({ companyName: lead.companyName, status: 'apollo', current, total });
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // Step 2: PDL owner search
-          setVerificationStatus({ companyName: lead.companyName, status: 'pdl', current, total });
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // Step 3: Numverify phone validation
-          setVerificationStatus({ companyName: lead.companyName, status: 'numverify', current, total });
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // Step 4: Claude verification
-          setVerificationStatus({ companyName: lead.companyName, status: 'claude', current, total });
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // Step 5: ChatGPT verification
-          setVerificationStatus({ companyName: lead.companyName, status: 'chatgpt', current, total });
-
-          const response = await fetch(`${API_URL}/api/verify`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lead })
-          });
-          const enrichedLead = await response.json();
-          verifiedLeads.push({ ...enrichedLead, verified: true });
-        } catch (error) {
-          console.error('Error verifying lead:', lead.companyName, error);
-        }
-      }
-      setLeads([...verifiedLeads, ...leads]);
-      setScrapedData([]);
-    } catch (error) {
-      console.error('Error verifying all leads:', error);
-      alert('Error verifying all leads');
-    } finally {
-      setIsProcessing(false);
-      setVerificationStatus(null);
-    }
+  const saveAllFromScraped = () => {
+    const stamp = new Date().toISOString();
+    setLeads(prev => [...scrapedData.map(l => ({ ...l, savedAt: stamp })), ...prev]);
+    setScrapedData([]);
   };
 
   const rejectLead = (leadId) => setScrapedData(scrapedData.filter(l => l.id !== leadId));
@@ -693,8 +590,22 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
 
   const exportScrapedToCSV = () => {
     const csv = [
-      ['Company Name', 'Industry', 'Phone', 'Address', 'Zipcode', 'City', 'State', 'Country', 'Source'],
-      ...scrapedData.map(lead => [lead.companyName, lead.industry, lead.phone, lead.address, lead.zipcode, lead.city, lead.state, lead.country, lead.source])
+      ['Company Name', 'Owner', 'Title', 'Industry', 'Phone', 'Address', 'Zipcode', 'City', 'State', 'Country', 'Address class', 'RDI', 'Source'],
+      ...scrapedData.map(lead => [
+        lead.companyName,
+        lead.ownerName || '',
+        lead.title || '',
+        lead.industry,
+        lead.phone,
+        lead.address,
+        lead.zipcode,
+        lead.city,
+        lead.state,
+        lead.country,
+        lead.addressClassification?.value || '',
+        lead.addressClassification?.rdi || '',
+        lead.source
+      ])
     ].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -707,8 +618,21 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
 
   const exportToCSV = () => {
     const csv = [
-      ['Company Name', 'Industry', 'Owner Name', 'Phone', 'Address', 'Zipcode', 'City', 'Country', 'Source', 'Verified'],
-      ...leads.map(lead => [lead.companyName, lead.industry, lead.ownerName, lead.phone, lead.address, lead.zipcode, lead.city, lead.country, lead.source, lead.verified ? 'Yes' : 'No'])
+      ['Company Name', 'Industry', 'Owner Name', 'Phone', 'Address', 'Zipcode', 'City', 'Country', 'Address class', 'RDI', 'Source', 'Saved at'],
+      ...leads.map(lead => [
+        lead.companyName,
+        lead.industry,
+        lead.ownerName,
+        lead.phone,
+        lead.address,
+        lead.zipcode,
+        lead.city,
+        lead.country,
+        lead.addressClassification?.value || '',
+        lead.addressClassification?.rdi || '',
+        lead.source,
+        lead.savedAt || ''
+      ])
     ].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -735,36 +659,19 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
       <div className="max-w-4xl mx-auto">
         <div className="text-center mb-8">
           <h1 className="text-5xl font-bold text-white mb-2">SSAI Leads Pro</h1>
-          <p className="text-purple-200">AI-Powered Lead Generation</p>
+          <p className="text-purple-200">Google Places discovery and optional US address classification (Smarty RDI)</p>
 
           <div className="flex justify-center gap-4 mt-4 flex-wrap">
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.openai.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
-              <div className={`w-2 h-2 rounded-full ${aiStatus.openai.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
-              <span className="text-sm font-medium text-white">ChatGPT: {aiStatus.openai.configured ? 'Active' : 'Inactive'}</span>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${backendHealth?.ok ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
+              <div className={`w-2 h-2 rounded-full ${backendHealth?.ok ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
+              <span className="text-sm font-medium text-white">
+                API: {backendHealth?.ok ? 'Reachable' : 'Unreachable'}
+              </span>
             </div>
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.claude.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
-              <div className={`w-2 h-2 rounded-full ${aiStatus.claude.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
-              <span className="text-sm font-medium text-white">Claude: {aiStatus.claude.configured ? 'Active' : 'Inactive'}</span>
-            </div>
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.apollo?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
-              <div className={`w-2 h-2 rounded-full ${aiStatus.apollo?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
-              <span className="text-sm font-medium text-white">Apollo: {aiStatus.apollo?.configured ? 'Active' : 'Inactive'}</span>
-            </div>
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.numverify?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
-              <div className={`w-2 h-2 rounded-full ${aiStatus.numverify?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
-              <span className="text-sm font-medium text-white">Numverify: {aiStatus.numverify?.configured ? 'Active' : 'Inactive'}</span>
-            </div>
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.peopleDataLabs?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
-              <div className={`w-2 h-2 rounded-full ${aiStatus.peopleDataLabs?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
-              <span className="text-sm font-medium text-white">PeopleDataLabs: {aiStatus.peopleDataLabs?.configured ? 'Active' : 'Inactive'}</span>
-            </div>
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.hunter?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
-              <div className={`w-2 h-2 rounded-full ${aiStatus.hunter?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
-              <span className="text-sm font-medium text-white">Hunter: {aiStatus.hunter?.configured ? 'Active' : 'Inactive'}</span>
-            </div>
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${aiStatus.yelp?.configured ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
-              <div className={`w-2 h-2 rounded-full ${aiStatus.yelp?.configured ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></div>
-              <span className="text-sm font-medium text-white">Yelp: {aiStatus.yelp?.configured ? 'Active' : 'Inactive'}</span>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${classifyResidence ? 'bg-teal-600/20 border border-teal-500/50' : 'bg-white/10 border border-white/20'}`}>
+              <span className="text-sm font-medium text-white">
+                After scrape: {classifyResidence ? 'classification on' : 'classification off'}
+              </span>
             </div>
           </div>
         </div>
@@ -777,10 +684,6 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
           <button onClick={() => setActiveTab('scraper')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'scraper' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/10 text-purple-200 hover:bg-white/20'}`}>
             <Search size={18} />
             Text Search
-          </button>
-          <button onClick={() => setActiveTab('manual')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'manual' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/10 text-purple-200 hover:bg-white/20'}`}>
-            <Upload size={18} />
-            Find Contacts
           </button>
         </div>
 
@@ -810,42 +713,20 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                 </div>
               </div>
               <div className="mb-4">
-                <label className="block text-sm font-medium text-purple-200 mb-1">Maximum Leads (Apollo: up to 60+, Google: up to 60 per area)</label>
-                <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                <label className="block text-sm font-medium text-purple-200 mb-1">Maximum leads (Google Places; typical cap ~60 per request)</label>
+                <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value, 10))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
               </div>
-              <div className="flex items-center gap-3 p-4 bg-purple-600/20 rounded-lg border border-purple-500/50 mb-4">
+              <div className="flex items-center gap-3 p-4 bg-teal-600/20 rounded-lg border border-teal-500/50 mb-4">
                 <input
                   type="checkbox"
-                  id="useApolloSearchMap"
-                  checked={useApolloSearch}
-                  onChange={(e) => setUseApolloSearch(e.target.checked)}
-                  className="w-5 h-5 rounded border-2 border-purple-400 bg-white/10 checked:bg-purple-600 checked:border-purple-600 cursor-pointer"
+                  id="classifyResidenceMap"
+                  checked={classifyResidence}
+                  onChange={(e) => setClassifyResidence(e.target.checked)}
+                  className="w-5 h-5 rounded border-2 border-teal-400 bg-white/10 checked:bg-teal-600 checked:border-teal-600 cursor-pointer"
                 />
-                <label htmlFor="useApolloSearchMap" className="text-white font-medium cursor-pointer flex-1">
-                  Use Apollo Search (Companies, Businesses)
+                <label htmlFor="classifyResidenceMap" className="text-white font-medium cursor-pointer flex-1">
+                  Classify US addresses after scrape (Smarty — residential / commercial RDI when keys are configured)
                 </label>
-                {aiStatus.apollo?.configured && (
-                  <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
-                    Apollo Active
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-3 p-4 bg-red-600/20 rounded-lg border border-red-500/50 mb-4">
-                <input
-                  type="checkbox"
-                  id="useYelpSearchMap"
-                  checked={useYelpSearch}
-                  onChange={(e) => setUseYelpSearch(e.target.checked)}
-                  className="w-5 h-5 rounded border-2 border-red-400 bg-white/10 checked:bg-red-600 checked:border-red-600 cursor-pointer"
-                />
-                <label htmlFor="useYelpSearchMap" className="text-white font-medium cursor-pointer flex-1">
-                  Use Yelp Search (Restaurants, Local Businesses)
-                </label>
-                {aiStatus.yelp?.configured && (
-                  <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
-                    Yelp Active
-                  </span>
-                )}
               </div>
               <div ref={mapRef} className="w-full rounded-xl border-2 border-white/20" style={{ height: '400px', minHeight: '400px' }} />
               <div className="mt-4 p-3 bg-purple-600/20 rounded-lg text-sm text-purple-200">
@@ -888,42 +769,20 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Maximum Leads (Apollo: up to 60+, Google: up to 60 per area)</label>
-                  <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                  <label className="block text-sm font-medium text-purple-200 mb-1">Maximum leads (Google Places; typical cap ~60 per request)</label>
+                  <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value, 10))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
                 </div>
-                <div className="flex items-center gap-3 p-4 bg-purple-600/20 rounded-lg border border-purple-500/50">
+                <div className="flex items-center gap-3 p-4 bg-teal-600/20 rounded-lg border border-teal-500/50">
                   <input
                     type="checkbox"
-                    id="useApolloSearch"
-                    checked={useApolloSearch}
-                    onChange={(e) => setUseApolloSearch(e.target.checked)}
-                    className="w-5 h-5 rounded border-2 border-purple-400 bg-white/10 checked:bg-purple-600 checked:border-purple-600 cursor-pointer"
+                    id="classifyResidenceText"
+                    checked={classifyResidence}
+                    onChange={(e) => setClassifyResidence(e.target.checked)}
+                    className="w-5 h-5 rounded border-2 border-teal-400 bg-white/10 checked:bg-teal-600 checked:border-teal-600 cursor-pointer"
                   />
-                  <label htmlFor="useApolloSearch" className="text-white font-medium cursor-pointer flex-1">
-                    Use Apollo Search (Companies, Businesses)
+                  <label htmlFor="classifyResidenceText" className="text-white font-medium cursor-pointer flex-1">
+                    Classify US addresses after scrape (Smarty — residential / commercial RDI when keys are configured)
                   </label>
-                  {aiStatus.apollo?.configured && (
-                    <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
-                      Apollo Active
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-3 p-4 bg-red-600/20 rounded-lg border border-red-500/50">
-                  <input
-                    type="checkbox"
-                    id="useYelpSearch"
-                    checked={useYelpSearch}
-                    onChange={(e) => setUseYelpSearch(e.target.checked)}
-                    className="w-5 h-5 rounded border-2 border-red-400 bg-white/10 checked:bg-red-600 checked:border-red-600 cursor-pointer"
-                  />
-                  <label htmlFor="useYelpSearch" className="text-white font-medium cursor-pointer flex-1">
-                    Use Yelp Search (Restaurants, Local Businesses)
-                  </label>
-                  {aiStatus.yelp?.configured && (
-                    <span className="px-3 py-1 bg-green-600/20 border border-green-500/50 rounded-full text-xs font-semibold text-green-300">
-                      Yelp Active
-                    </span>
-                  )}
                 </div>
                 <button onClick={handleScrape} disabled={isProcessing} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
                   {isProcessing ? <><Loader className="animate-spin" size={20} />Scraping...</> : <><Search size={20} />Start Scraping</>}
@@ -932,56 +791,14 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
             </div>
           )}
 
-          {activeTab === 'manual' && (
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
-              <h2 className="text-2xl font-semibold text-white mb-6 flex items-center gap-2">
-                <Upload className="text-purple-400" />
-                Find Contacts
-              </h2>
-              <div className="mb-4 p-3 bg-purple-600/20 rounded-lg text-sm text-purple-200">
-                <strong>Enter any partial information you have.</strong> AI will enrich and fill missing fields.
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Company Name</label>
-                  <input type="text" name="companyName" value={formData.companyName} onChange={handleFormChange} placeholder="e.g. Acme Corp" className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Industry / Category</label>
-                  <input type="text" name="industry" value={formData.industry} onChange={handleFormChange} placeholder="e.g. Restaurant, Retail, etc." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Address</label>
-                  <input type="text" name="address" value={formData.address} onChange={handleFormChange} placeholder="e.g. 123 Main St" className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-purple-200 mb-1">City</label>
-                    <input type="text" name="city" value={formData.city} onChange={handleFormChange} placeholder="e.g. New York" className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-purple-200 mb-1">Zip Code</label>
-                    <input type="text" name="zipcode" value={formData.zipcode} onChange={handleFormChange} placeholder="e.g. 10001" className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-purple-200 mb-1">Country</label>
-                    <input type="text" name="country" value={formData.country} onChange={handleFormChange} placeholder="e.g. USA" className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-purple-200 mb-1">Phone</label>
-                    <input type="text" name="phone" value={formData.phone} onChange={handleFormChange} placeholder="e.g. (555) 123-4567" className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Owner Name</label>
-                  <input type="text" name="ownerName" value={formData.ownerName} onChange={handleFormChange} placeholder="e.g. John Doe" className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                </div>
-                <button onClick={handleManualAdd} disabled={isProcessing} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50">
-                  {isProcessing ? 'Enriching with AI...' : 'Enrich & Add Lead'}
-                </button>
-              </div>
+          {lastScrapeInfo?.ignoredFlags?.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/40 rounded-xl p-4 text-amber-100 text-sm">
+              <strong className="block mb-1">Server notes</strong>
+              <ul className="list-disc list-inside space-y-0.5">
+                {lastScrapeInfo.ignoredFlags.map((msg, i) => (
+                  <li key={i}>{msg}</li>
+                ))}
+              </ul>
             </div>
           )}
 
@@ -1005,12 +822,12 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                     Clean Data
                   </button>
                   <button
-                    onClick={verifyAllLeads}
+                    onClick={saveAllFromScraped}
                     disabled={isProcessing}
                     className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-50 transition-all"
                   >
-                    <Check size={16} />
-                    Verify All ({scrapedData.length})
+                    <Plus size={16} />
+                    Save all ({scrapedData.length})
                   </button>
                 </div>
               )}
@@ -1022,11 +839,24 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                 scrapedData.map(lead => (
                   <div key={lead.id} className="bg-white/10 rounded-lg p-4 border border-white/20">
                     <h4 className="font-semibold text-white mb-2">{lead.companyName}</h4>
+                    {lead.ownerName && lead.ownerName !== 'N/A' && (
+                      <p className="text-sm text-emerald-300 mb-1">
+                        Owner: {lead.ownerName}
+                        {lead.title && lead.title !== 'N/A' ? ` · ${lead.title}` : ''}
+                      </p>
+                    )}
                     <p className="text-sm text-purple-200 mb-1">{lead.phone}</p>
-                    <p className="text-sm text-purple-200 mb-3">{lead.address}</p>
+                    <p className="text-sm text-purple-200 mb-1">{lead.address}</p>
+                    {lead.addressClassification && (
+                      <p className="text-sm text-amber-200 mb-2">
+                        Address type: <strong>{lead.addressClassification.value}</strong>
+                        {lead.addressClassification.rdi ? ` · RDI: ${lead.addressClassification.rdi}` : ''}
+                        {lead.addressClassification.skippedReason ? ` (skipped: ${lead.addressClassification.skippedReason})` : ''}
+                      </p>
+                    )}
                     <div className="flex gap-2">
-                      <button onClick={() => verifyWithAI(lead)} disabled={isProcessing} className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1 disabled:opacity-50">
-                        <Check size={16} />Verify & Add
+                      <button type="button" onClick={() => saveLeadToList(lead)} disabled={isProcessing} className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1 disabled:opacity-50">
+                        <Plus size={16} />Save to list
                       </button>
                       <button onClick={() => rejectLead(lead.id)} className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1">
                         <X size={16} />Reject
@@ -1038,87 +868,11 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
             </div>
           </div>
 
-          {verificationStatus && (
-            <div className="bg-gradient-to-r from-purple-600/20 to-pink-600/20 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-purple-500/50 animate-pulse">
-              <div className="text-center">
-                <p className="text-xl font-semibold text-white mb-1">
-                  AI Verification in Progress
-                </p>
-                <p className="text-purple-200 mb-2">
-                  {verificationStatus.companyName}
-                </p>
-                <p className="text-2xl font-bold text-white mb-4">
-                  {verificationStatus.total}/{verificationStatus.current}
-                </p>
-
-                {/* Progress Bar */}
-                <div className="w-full bg-gray-700/50 rounded-full h-3 mb-4 overflow-hidden">
-                  <div
-                    className="bg-gradient-to-r from-purple-600 to-pink-600 h-3 rounded-full transition-all duration-500 ease-out"
-                    style={{
-                      width: verificationStatus.status === 'apollo' ? '14.29%' :
-                        verificationStatus.status === 'pdl' ? '28.57%' :
-                          verificationStatus.status === 'numverify' ? '42.86%' :
-                            verificationStatus.status === 'yelp' ? '57.14%' :
-                              verificationStatus.status === 'hunter' ? '71.43%' :
-                                verificationStatus.status === 'claude' ? '85.71%' : '100%'
-                    }}
-                  ></div>
-                </div>
-
-                <div className="flex items-center justify-center gap-2 flex-wrap">
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'apollo' ? 'bg-blue-600' : 'bg-blue-600/20'}`}>
-                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'apollo' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm font-medium text-white">
-                      {verificationStatus.status === 'apollo' ? 'Talking to Apollo...' : 'Apollo'}
-                    </span>
-                  </div>
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'pdl' ? 'bg-indigo-600' : 'bg-indigo-600/20'}`}>
-                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'pdl' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm font-medium text-white">
-                      {verificationStatus.status === 'pdl' ? 'Talking to PDL...' : 'PDL'}
-                    </span>
-                  </div>
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'numverify' ? 'bg-orange-600' : 'bg-orange-600/20'}`}>
-                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'numverify' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm font-medium text-white">
-                      {verificationStatus.status === 'numverify' ? 'Talking to Numverify...' : 'Numverify'}
-                    </span>
-                  </div>
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'yelp' ? 'bg-red-600' : 'bg-red-600/20'}`}>
-                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'yelp' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm font-medium text-white">
-                      {verificationStatus.status === 'yelp' ? 'Talking to Yelp...' : 'Yelp'}
-                    </span>
-                  </div>
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'hunter' ? 'bg-teal-600' : 'bg-teal-600/20'}`}>
-                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'hunter' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm font-medium text-white">
-                      {verificationStatus.status === 'hunter' ? 'Talking to Hunter...' : 'Hunter'}
-                    </span>
-                  </div>
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'claude' ? 'bg-purple-600' : 'bg-purple-600/20'}`}>
-                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'claude' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm font-medium text-white">
-                      {verificationStatus.status === 'claude' ? 'Talking to Claude...' : 'Claude'}
-                    </span>
-                  </div>
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${verificationStatus.status === 'chatgpt' ? 'bg-green-600' : 'bg-green-600/20'}`}>
-                    <div className={`w-2 h-2 rounded-full ${verificationStatus.status === 'chatgpt' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm font-medium text-white">
-                      {verificationStatus.status === 'chatgpt' ? 'Talking to ChatGPT...' : 'ChatGPT'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
           <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
             <div className="flex justify-between items-center mb-6 flex-wrap gap-3">
               <h2 className="text-2xl font-semibold text-white flex items-center gap-2">
                 <Building2 className="text-purple-400" />
-                Verified Leads ({leads.length})
+                Saved leads ({leads.length})
               </h2>
               {leads.length > 0 && (
                 <div className="flex gap-2">
@@ -1135,7 +889,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
               {leads.length === 0 ? (
                 <div className="text-center py-12">
                   <Building2 size={48} className="mx-auto mb-3 text-purple-400 opacity-50" />
-                  <p className="text-purple-300">No verified leads yet</p>
+                  <p className="text-purple-300">No saved leads yet</p>
                 </div>
               ) : (
                 leads.map(lead => (
@@ -1150,9 +904,13 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                       </button>
                     </div>
                     <div className="space-y-1 text-sm text-purple-200">
-                      <p><strong>Owner:</strong> {lead.ownerName}</p>
+                      <p><strong>Owner:</strong> {lead.ownerName || '—'}</p>
                       {lead.phone && <p><strong>Phone:</strong> {lead.phone}</p>}
                       {lead.address && <p><strong>Address:</strong> {lead.address}</p>}
+                      {lead.addressClassification && (
+                        <p><strong>Address type:</strong> {lead.addressClassification.value}
+                          {lead.addressClassification.rdi ? ` (${lead.addressClassification.rdi})` : ''}</p>
+                      )}
                     </div>
                   </div>
                 ))
