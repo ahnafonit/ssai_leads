@@ -120,34 +120,34 @@ export default function App() {
       drawingMode: null,
       drawingControl: false,  // Disable default controls, we'll use custom buttons
       circleOptions: {
-        fillColor: '#9333ea',
+        fillColor: '#1CA198',
         fillOpacity: 0.3,
-        strokeColor: '#9333ea',
+        strokeColor: '#1CA198',
         strokeWeight: 2,
         clickable: true,
         editable: true,
         zIndex: 1
       },
       polygonOptions: {
-        fillColor: '#9333ea',
+        fillColor: '#1CA198',
         fillOpacity: 0.3,
-        strokeColor: '#9333ea',
+        strokeColor: '#1CA198',
         strokeWeight: 2,
         clickable: true,
         editable: true,
         zIndex: 1
       },
       rectangleOptions: {
-        fillColor: '#9333ea',
+        fillColor: '#1CA198',
         fillOpacity: 0.3,
-        strokeColor: '#9333ea',
+        strokeColor: '#1CA198',
         strokeWeight: 2,
         clickable: true,
         editable: true,
         zIndex: 1
       },
       polylineOptions: {
-        strokeColor: '#9333ea',
+        strokeColor: '#1CA198',
         strokeWeight: 3,
         clickable: true,
         editable: true,
@@ -165,7 +165,7 @@ export default function App() {
     controlDiv.style.gap = '8px';
 
     // Helper function to create custom buttons
-    const createDrawButton = (text, icon, drawingMode, bgColor = '#9333ea') => {
+    const createDrawButton = (text, icon, drawingMode, bgColor = '#1CA198') => {
       const button = document.createElement('button');
       button.innerHTML = `${icon} ${text}`;
       button.style.backgroundColor = bgColor;
@@ -212,7 +212,7 @@ export default function App() {
     // Create multi-polygon button with special handling
     const multiPolygonButton = document.createElement('button');
     multiPolygonButton.innerHTML = '🔷 Multi';
-    multiPolygonButton.style.backgroundColor = '#9333ea';  // Purple color (same as other buttons)
+    multiPolygonButton.style.backgroundColor = '#1CA198';
     multiPolygonButton.style.color = 'white';
     multiPolygonButton.style.border = 'none';
     multiPolygonButton.style.padding = '10px 16px';
@@ -241,13 +241,13 @@ export default function App() {
         // Enable multi-polygon mode
         multiPolygonModeRef.current = true;
         multiPolygonButton.innerHTML = '🔷 Multi (Active)';
-        multiPolygonButton.style.backgroundColor = '#7c3aed';  // Darker purple
+        multiPolygonButton.style.backgroundColor = '#148a7f';
         drawingManager.setDrawingMode(window.google.maps.drawing.OverlayType.POLYGON);
       } else {
         // Disable multi-polygon mode
         multiPolygonModeRef.current = false;
         multiPolygonButton.innerHTML = '🔷 Multi';
-        multiPolygonButton.style.backgroundColor = '#9333ea';  // Same purple as other buttons
+        multiPolygonButton.style.backgroundColor = '#1CA198';
         drawingManager.setDrawingMode(null);
       }
     };
@@ -655,11 +655,16 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-6">
-      <div className="max-w-4xl mx-auto">
+    <>
+      <div className="pointer-events-none fixed inset-0 -z-10" aria-hidden>
+        <div className="absolute inset-0 bg-gradient-to-br from-[#1a6d64] via-[#1CA198] to-[#040f0e]" />
+        <div className="absolute inset-0 bg-gradient-to-b from-[#020d0c]/75 via-transparent to-white/[0.06]" />
+      </div>
+      <div className="relative min-h-screen p-6">
+        <div className="mx-auto max-w-4xl">
         <div className="text-center mb-8">
           <h1 className="text-5xl font-bold text-white mb-2">SSAI Leads Pro</h1>
-          <p className="text-purple-200">Google Places discovery and optional US address classification (Smarty RDI)</p>
+          <p className="text-teal-100/85">Google Places discovery and optional US address classification (Smarty RDI)</p>
 
           <div className="flex justify-center gap-4 mt-4 flex-wrap">
             <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${backendHealth?.ok ? 'bg-green-600/20 border border-green-500/50' : 'bg-red-600/20 border border-red-500/50'}`}>
@@ -668,20 +673,20 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                 API: {backendHealth?.ok ? 'Reachable' : 'Unreachable'}
               </span>
             </div>
-            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${classifyResidence ? 'bg-teal-600/20 border border-teal-500/50' : 'bg-white/10 border border-white/20'}`}>
+            <div className={`px-4 py-2 rounded-lg flex items-center gap-2 ${classifyResidence ? 'border border-teal-400/50 bg-[#1CA198]/20' : 'border border-white/15 bg-black/35'}`}>
               <span className="text-sm font-medium text-white">
-                After scrape: {classifyResidence ? 'classification on' : 'classification off'}
+                After Scrape: {classifyResidence ? 'Classification On' : 'Classification Off'}
               </span>
             </div>
           </div>
         </div>
 
         <div className="flex gap-4 mb-6 flex-wrap">
-          <button onClick={() => setActiveTab('map')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'map' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/10 text-purple-200 hover:bg-white/20'}`}>
+          <button onClick={() => setActiveTab('map')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'map' ? 'bg-[#1CA198] text-white shadow-lg shadow-[#1CA198]/35' : 'border border-white/10 bg-black/35 text-teal-100/90 hover:bg-black/45'}`}>
             <MapPin size={18} />
             Map Search
           </button>
-          <button onClick={() => setActiveTab('scraper')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'scraper' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/10 text-purple-200 hover:bg-white/20'}`}>
+          <button onClick={() => setActiveTab('scraper')} className={`px-6 py-3 rounded-lg font-semibold transition-all flex items-center gap-2 ${activeTab === 'scraper' ? 'bg-[#1CA198] text-white shadow-lg shadow-[#1CA198]/35' : 'border border-white/10 bg-black/35 text-teal-100/90 hover:bg-black/45'}`}>
             <Search size={18} />
             Text Search
           </button>
@@ -689,32 +694,32 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
 
         <div className="space-y-6">
           {activeTab === 'map' && (
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
+            <div className="rounded-2xl border border-white/20 bg-slate-950/60 p-6 shadow-2xl shadow-black/40 backdrop-blur-xl">
               <h2 className="text-2xl font-semibold text-white mb-6 flex items-center gap-2">
-                <MapPin className="text-purple-400" />
+                <MapPin className="text-teal-300" />
                 Draw Area on Map
               </h2>
-              <div className="mb-4 p-3 bg-purple-600/20 rounded-lg flex gap-2">
-                <input type="text" value={mapSearchInput} onChange={(e) => setMapSearchInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && searchLocation()} placeholder="Enter location..." className="flex-1 px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
-                <button onClick={searchLocation} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-semibold">Go</button>
+              <div className="mb-4 p-3 bg-[#1CA198]/12 rounded-lg flex gap-2">
+                <input type="text" value={mapSearchInput} onChange={(e) => setMapSearchInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && searchLocation()} placeholder="Enter location..." className="flex-1 px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
+                <button onClick={searchLocation} className="px-4 py-2 bg-[#1CA198] hover:bg-[#178f86] text-white rounded-lg font-semibold">Go</button>
               </div>
               <div className="mb-4">
-                <label className="block text-sm font-medium text-purple-200 mb-1">Industry</label>
-                <input type="text" value={mapQuery} onChange={(e) => setMapQuery(e.target.value)} placeholder="Enter business type..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                <label className="block text-sm font-medium text-teal-100/90 mb-1">Industry</label>
+                <input type="text" value={mapQuery} onChange={(e) => setMapQuery(e.target.value)} placeholder="Enter business type..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
               </div>
               <div className="mb-4 grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Country (Optional)</label>
-                  <input type="text" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Enter country..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                  <label className="block text-sm font-medium text-teal-100/90 mb-1">Country (Optional)</label>
+                  <input type="text" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Enter country..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Zip Code (Optional)</label>
-                  <input type="text" value={zipcode} onChange={(e) => setZipcode(e.target.value)} placeholder="Enter zip code..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                  <label className="block text-sm font-medium text-teal-100/90 mb-1">Zip Code (Optional)</label>
+                  <input type="text" value={zipcode} onChange={(e) => setZipcode(e.target.value)} placeholder="Enter zip code..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
                 </div>
               </div>
               <div className="mb-4">
-                <label className="block text-sm font-medium text-purple-200 mb-1">Maximum leads (Google Places; typical cap ~60 per request)</label>
-                <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value, 10))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                <label className="block text-sm font-medium text-teal-100/90 mb-1">Maximum leads (Google Places; typical cap ~60 per request)</label>
+                <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value, 10))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
               </div>
               <div className="flex items-center gap-3 p-4 bg-teal-600/20 rounded-lg border border-teal-500/50 mb-4">
                 <input
@@ -729,48 +734,48 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                 </label>
               </div>
               <div ref={mapRef} className="w-full rounded-xl border-2 border-white/20" style={{ height: '400px', minHeight: '400px' }} />
-              <div className="mt-4 p-3 bg-purple-600/20 rounded-lg text-sm text-purple-200">
+              <div className="mt-4 p-3 bg-[#1CA198]/12 rounded-lg text-sm text-teal-100/90">
                 <strong>Instructions:</strong><br />
                 1. Use search to find a location<br />
                 2. Use drawing tools to select an area<br />
                 3. Enter business type above<br />
                 4. Click "Scrape Selected Area"
               </div>
-              {areaDetails && (<div className="mt-3 p-3 bg-purple-600/20 rounded-lg text-sm text-purple-200"><strong>Selected Area:</strong><br />{areaDetails}</div>)}
-              <button onClick={scrapeMapArea} disabled={isProcessing} className="w-full mt-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+              {areaDetails && (<div className="mt-3 p-3 bg-[#1CA198]/12 rounded-lg text-sm text-teal-100/90"><strong>Selected Area:</strong><br />{areaDetails}</div>)}
+              <button onClick={scrapeMapArea} disabled={isProcessing} className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-[#1CA198] to-[#136b65] py-3 font-semibold text-white shadow-lg shadow-[#1CA198]/20 transition-all hover:from-[#178f86] hover:to-[#0f5853] disabled:opacity-50">
                 {isProcessing ? <><Loader className="animate-spin" size={20} />Scraping...</> : <><Search size={20} />Scrape Selected Area</>}
               </button>
             </div>
           )}
 
           {activeTab === 'scraper' && (
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
+            <div className="rounded-2xl border border-white/20 bg-slate-950/60 p-6 shadow-2xl shadow-black/40 backdrop-blur-xl">
               <h2 className="text-2xl font-semibold text-white mb-6 flex items-center gap-2">
-                <Search className="text-purple-400" />
+                <Search className="text-teal-300" />
                 Text-Based Search
               </h2>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Industry</label>
-                  <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Enter business type..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                  <label className="block text-sm font-medium text-teal-100/90 mb-1">Industry</label>
+                  <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Enter business type..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Location</label>
-                  <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Enter location..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                  <label className="block text-sm font-medium text-teal-100/90 mb-1">Location</label>
+                  <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Enter location..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-purple-200 mb-1">Country (Optional)</label>
-                    <input type="text" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Enter country..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                    <label className="block text-sm font-medium text-teal-100/90 mb-1">Country (Optional)</label>
+                    <input type="text" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Enter country..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-purple-200 mb-1">Zip Code (Optional)</label>
-                    <input type="text" value={zipcode} onChange={(e) => setZipcode(e.target.value)} placeholder="Enter zip code..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                    <label className="block text-sm font-medium text-teal-100/90 mb-1">Zip Code (Optional)</label>
+                    <input type="text" value={zipcode} onChange={(e) => setZipcode(e.target.value)} placeholder="Enter zip code..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-purple-200 mb-1">Maximum leads (Google Places; typical cap ~60 per request)</label>
-                  <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value, 10))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-purple-300 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+                  <label className="block text-sm font-medium text-teal-100/90 mb-1">Maximum leads (Google Places; typical cap ~60 per request)</label>
+                  <input type="number" value={maxLeads} onChange={(e) => setMaxLeads(e.target.value === '' ? '' : parseInt(e.target.value, 10))} min="1" max="10000" placeholder="Number of leads..." className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-teal-200/55 focus:ring-2 focus:ring-[#1CA198] focus:outline-none" />
                 </div>
                 <div className="flex items-center gap-3 p-4 bg-teal-600/20 rounded-lg border border-teal-500/50">
                   <input
@@ -784,7 +789,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                     Classify US addresses after scrape (Smarty — residential / commercial RDI when keys are configured)
                   </label>
                 </div>
-                <button onClick={handleScrape} disabled={isProcessing} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+                <button onClick={handleScrape} disabled={isProcessing} className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-[#1CA198] to-[#136b65] py-3 font-semibold text-white shadow-lg shadow-[#1CA198]/20 transition-all hover:from-[#178f86] hover:to-[#0f5853] disabled:opacity-50">
                   {isProcessing ? <><Loader className="animate-spin" size={20} />Scraping...</> : <><Search size={20} />Start Scraping</>}
                 </button>
               </div>
@@ -802,7 +807,7 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
             </div>
           )}
 
-          <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
+          <div className="rounded-2xl border border-white/20 bg-slate-950/60 p-6 shadow-2xl shadow-black/40 backdrop-blur-xl">
             <div className="flex justify-between items-center mb-4 flex-wrap gap-3">
               <h3 className="text-xl font-semibold text-white">Leads Found ({scrapedData.length})</h3>
               {scrapedData.length > 0 && (
@@ -834,10 +839,10 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
             </div>
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {scrapedData.length === 0 ? (
-                <p className="text-purple-300 text-center py-8">No leads found yet</p>
+                <p className="text-teal-200/80 text-center py-8">No leads found yet</p>
               ) : (
                 scrapedData.map(lead => (
-                  <div key={lead.id} className="bg-white/10 rounded-lg p-4 border border-white/20">
+                  <div key={lead.id} className="rounded-lg border border-white/15 bg-slate-900/50 p-4">
                     <h4 className="font-semibold text-white mb-2">{lead.companyName}</h4>
                     {lead.ownerName && lead.ownerName !== 'N/A' && (
                       <p className="text-sm text-emerald-300 mb-1">
@@ -845,8 +850,8 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
                         {lead.title && lead.title !== 'N/A' ? ` · ${lead.title}` : ''}
                       </p>
                     )}
-                    <p className="text-sm text-purple-200 mb-1">{lead.phone}</p>
-                    <p className="text-sm text-purple-200 mb-1">{lead.address}</p>
+                    <p className="text-sm text-teal-100/90 mb-1">{lead.phone}</p>
+                    <p className="text-sm text-teal-100/90 mb-1">{lead.address}</p>
                     {lead.addressClassification && (
                       <p className="text-sm text-amber-200 mb-2">
                         Address type: <strong>{lead.addressClassification.value}</strong>
@@ -868,10 +873,10 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
             </div>
           </div>
 
-          <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 border border-white/20">
+          <div className="rounded-2xl border border-white/20 bg-slate-950/60 p-6 shadow-2xl shadow-black/40 backdrop-blur-xl">
             <div className="flex justify-between items-center mb-6 flex-wrap gap-3">
               <h2 className="text-2xl font-semibold text-white flex items-center gap-2">
-                <Building2 className="text-purple-400" />
+                <Building2 className="text-teal-300" />
                 Saved leads ({leads.length})
               </h2>
               {leads.length > 0 && (
@@ -888,22 +893,22 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
             <div className="space-y-4 max-h-[calc(100vh-300px)] overflow-y-auto">
               {leads.length === 0 ? (
                 <div className="text-center py-12">
-                  <Building2 size={48} className="mx-auto mb-3 text-purple-400 opacity-50" />
-                  <p className="text-purple-300">No saved leads yet</p>
+                  <Building2 size={48} className="mx-auto mb-3 text-teal-300 opacity-50" />
+                  <p className="text-teal-200/80">No saved leads yet</p>
                 </div>
               ) : (
                 leads.map(lead => (
-                  <div key={lead.id} className="bg-white/10 border border-white/20 rounded-lg p-4 hover:bg-white/20 transition-all">
+                  <div key={lead.id} className="rounded-lg border border-white/15 bg-slate-900/50 p-4 transition-all hover:bg-slate-800/55">
                     <div className="flex justify-between items-start mb-3">
                       <div>
                         <h3 className="font-semibold text-lg text-white">{lead.companyName}</h3>
-                        {lead.industry && <p className="text-sm text-purple-300">{lead.industry}</p>}
+                        {lead.industry && <p className="text-sm text-teal-200/80">{lead.industry}</p>}
                       </div>
                       <button onClick={() => deleteLead(lead.id)} className="text-red-400 hover:text-red-300">
                         <Trash2 size={18} />
                       </button>
                     </div>
-                    <div className="space-y-1 text-sm text-purple-200">
+                    <div className="space-y-1 text-sm text-teal-100/90">
                       <p><strong>Owner:</strong> {lead.ownerName || '—'}</p>
                       {lead.phone && <p><strong>Phone:</strong> {lead.phone}</p>}
                       {lead.address && <p><strong>Address:</strong> {lead.address}</p>}
@@ -921,5 +926,6 @@ Center: ${center.lat().toFixed(6)}, ${center.lng().toFixed(6)}`;
         </div>
       </div>
     </div>
+    </>
   );
 }
