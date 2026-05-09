@@ -1,0 +1,61 @@
+{
+  "generatedAt": "2026-05-06T14:56:34.326Z",
+  "maxPerScenario": 12,
+  "overall": {
+    "totalOrgs": 48,
+    "withDmName": 0,
+    "pctWithDm": 0
+  },
+  "byScenario": [
+    {
+      "id": "laundromat",
+      "label": "Laundromat",
+      "query": "laundromat",
+      "location": "Hamilton, ON",
+      "country": "Canada",
+      "discoveryCount": 0,
+      "withDm": 0,
+      "pctDm": 0
+    },
+    {
+      "id": "restaurant",
+      "label": "Restaurant",
+      "query": "restaurant",
+      "location": "Buffalo, NY",
+      "country": "United States",
+      "discoveryCount": 12,
+      "withDm": 0,
+      "pctDm": 0
+    },
+    {
+      "id": "industrial",
+      "label": "Industrial / fab",
+      "query": "metal fabrication",
+      "location": "Columbus, OH",
+      "country": "United States",
+      "discoveryCount": 12,
+      "withDm": 0,
+      "pctDm": 0
+    },
+    {
+      "id": "warehouse",
+      "label": "Warehouse / logistics",
+      "query": "warehouse distribution",
+      "location": "Houston, TX",
+      "country": "United States",
+      "discoveryCount": 12,
+      "withDm": 0,
+      "pctDm": 0
+    },
+    {
+      "id": "food_mfg",
+      "label": "Food processing",
+      "query": "food manufacturing",
+      "location": "Toronto, ON",
+      "country": "Canada",
+      "discoveryCount": 12,
+      "withDm": 0,
+      "pctDm": 0
+    }
+  ]
+}

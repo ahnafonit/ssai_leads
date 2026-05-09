@@ -1,1654 +1,100 @@
+/**
+ * HTTP API: Google Places discovery and optional Smarty-based residence / commercial classification.
+ */
+
+'use strict';
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const puppeteer = require('puppeteer');
-const axios = require('axios');
-const OpenAI = require('openai');
-const Anthropic = require('@anthropic-ai/sdk');
 require('dotenv').config({ override: true });
 
-// Initialize AI clients
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-});
+const {
+    scrapeGoogleMaps,
+    reverseGeocode,
+    calculateAreaCenter,
+    delay
+} = require('./src/services/googlePlaces');
 
-const anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY
-});
+const {
+    classifyResidenceBatch
+} = require('./src/services/residenceClassification');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
 app.use(helmet());
-app.use(cors({
-    origin: function(origin, callback) {
-        const allowed = [
-            'http://localhost:3005',
-            'https://lead-scraper-frontend-372172131227.us-central1.run.app',
-            process.env.FRONTEND_URL
-        ].filter(Boolean);
+app.use(
+    cors({
+        origin(origin, callback) {
+            const allowed = [
+                'http://localhost:3005',
+                'https://lead-scraper-frontend-372172131227.us-central1.run.app',
+                process.env.FRONTEND_URL
+            ].filter(Boolean);
 
-        if (!origin || allowed.includes(origin) || origin.endsWith('.run.app')) {
-            callback(null, true);
-        } else {
-            callback(null, false);
-        }
-    },
-    credentials: true
-}));
+            if (!origin || allowed.includes(origin) || origin.endsWith('.run.app')) {
+                callback(null, true);
+            } else {
+                callback(null, false);
+            }
+        },
+        credentials: true
+    })
+);
 app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100 // limit each IP to 100 requests per windowMs
+    windowMs: 15 * 60 * 1000,
+    max: 100
 });
 app.use('/api/', limiter);
 
-// Store for scraped data (in production, use a database)
-let scrapedLeads = [];
-
-// Helper function to simulate delay
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Helper function to generate random data for demo purposes
-const generateMockLead = (companyName, phone = null, address = null, zipcode = null, country = null) => ({
-    id: Date.now() + Math.random(),
-    companyName: companyName || `Business ${Math.floor(Math.random() * 1000)}`,
-    phone: phone || `+1-${Math.floor(Math.random() * 900 + 100)}-${Math.floor(Math.random() * 900 + 100)}-${Math.floor(Math.random() * 9000 + 1000)}`,
-    address: address || `${Math.floor(Math.random() * 999 + 1)} Main St, City, State ${zipcode || Math.floor(Math.random() * 90000 + 10000)}`,
-    zipcode: zipcode || Math.floor(Math.random() * 90000 + 10000).toString(),
-    city: ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix'][Math.floor(Math.random() * 5)],
-    country: country || 'USA',
-    industry: ['Restaurant', 'Retail', 'Service', 'Technology', 'Healthcare'][Math.floor(Math.random() * 5)],
-    ownerName: ['John Smith', 'Jane Doe', 'Mike Johnson', 'Sarah Wilson', 'David Brown'][Math.floor(Math.random() * 5)],
-    website: `www.${companyName?.toLowerCase().replace(/\s+/g, '') || 'business'}.com`,
-    rating: (Math.random() * 2 + 3).toFixed(1),
-    reviewCount: Math.floor(Math.random() * 500 + 10)
-});
-
-// Forward geocode a text location to lat/lng using Google Geocoding API
-async function forwardGeocode(location) {
-    try {
-        const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-        if (!apiKey) return null;
-
-        const response = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
-            params: { address: location, key: apiKey }
-        });
-
-        if (response.data.status === 'OK' && response.data.results.length > 0) {
-            const loc = response.data.results[0].geometry.location;
-            return { lat: loc.lat, lng: loc.lng };
-        }
-        return null;
-    } catch (error) {
-        console.error('Forward geocoding error:', error.message);
-        return null;
+/**
+ * When true, runs the residence classification step (Smarty RDI) after discovery.
+ * `classifyResidence` is preferred. `enrichContacts` is accepted as a legacy alias.
+ */
+function resolveClassifyResidenceFlag(body) {
+    const { classifyResidence, enrichContacts } = body;
+    if (classifyResidence === false || enrichContacts === false) {
+        return false;
     }
+    return Boolean(classifyResidence || enrichContacts);
 }
 
-// Generate non-overlapping rectangular grid cells covering a wide area
-function generateSearchGrid(center, numCells) {
-    const degPerKm = 1 / 111;
-    const lngDegPerKm = degPerKm / Math.cos(center.lat * Math.PI / 180);
-    const cellSizeKm = 6;
-
-    if (numCells <= 1) {
-        const halfLat = (cellSizeKm / 2) * degPerKm;
-        const halfLng = (cellSizeKm / 2) * lngDegPerKm;
-        return [{
-            south: center.lat - halfLat, north: center.lat + halfLat,
-            west: center.lng - halfLng, east: center.lng + halfLng
-        }];
+function collectIgnoredClientFlags(body) {
+    const ignored = [];
+    if (body.useApolloSearch === true) {
+        ignored.push('useApolloSearch is ignored; discovery is Google Places only.');
     }
-
-    const side = Math.ceil(Math.sqrt(numCells));
-    const totalWidthKm = side * cellSizeKm;
-    const startLat = center.lat - ((totalWidthKm / 2) * degPerKm);
-    const startLng = center.lng - ((totalWidthKm / 2) * lngDegPerKm);
-
-    const cells = [];
-    for (let row = 0; row < side && cells.length < numCells; row++) {
-        for (let col = 0; col < side && cells.length < numCells; col++) {
-            cells.push({
-                south: startLat + (row * cellSizeKm * degPerKm),
-                north: startLat + ((row + 1) * cellSizeKm * degPerKm),
-                west: startLng + (col * cellSizeKm * lngDegPerKm),
-                east: startLng + ((col + 1) * cellSizeKm * lngDegPerKm)
-            });
-        }
+    if (body.enrichWithApollo === true) {
+        ignored.push('enrichWithApollo is ignored; use classifyResidence for Smarty classification.');
     }
-
-    return cells;
+    if (body.enrichmentOptions != null && Object.keys(body.enrichmentOptions).length > 0) {
+        ignored.push('enrichmentOptions is ignored; use residenceClassificationOptions.');
+    }
+    return ignored;
 }
 
-// Single-cell scrape dispatcher (legacy or new, no subdivision)
-async function scrapeGoogleMapsSingle(query, location, area, zipcode, country, maxLeads, restriction = null) {
-    const mode = (process.env.GOOGLE_PLACES_MODE || 'legacy').toLowerCase();
-    if (mode === 'new') {
-        try {
-            return await scrapeGoogleMapsNew(query, location, area, zipcode, country, maxLeads, restriction);
-        } catch (err) {
-            console.warn(`[Places API] New API failed (${err.message}), falling back to legacy`);
-            return scrapeGoogleMapsLegacy(query, location, area, zipcode, country, maxLeads);
-        }
-    }
-    return scrapeGoogleMapsLegacy(query, location, area, zipcode, country, maxLeads);
+function firstConfigApplied(results) {
+    return results.map(r => r.residenceClassificationConfigApplied).filter(Boolean)[0] || null;
 }
 
-// Main dispatcher: auto-subdivides into grid cells when maxLeads > 60
-async function scrapeGoogleMaps(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
-    const GOOGLE_PAGE_LIMIT = 60;
-
-    if (maxLeads <= GOOGLE_PAGE_LIMIT) {
-        console.log(`[Places API] Single search for: "${query}" (maxLeads: ${maxLeads})`);
-        return scrapeGoogleMapsSingle(query, location, area, zipcode, country, maxLeads);
-    }
-
-    // Auto-subdivision: use more cells than strictly needed to account for overlap/dedup
-    const numCells = Math.ceil((maxLeads * 1.5) / GOOGLE_PAGE_LIMIT);
-    console.log(`[Places API] Auto-subdividing: "${query}" into ${numCells} grid cells for ${maxLeads} leads`);
-
-    let center = null;
-    if (area && area.type) {
-        center = calculateAreaCenter(area);
-    }
-    if (!center) {
-        const geoQuery = [location, zipcode, country].filter(Boolean).join(' ');
-        if (geoQuery) {
-            center = await forwardGeocode(geoQuery);
-        }
-    }
-
-    if (!center) {
-        console.warn('[Places API] Could not determine center for grid subdivision, falling back to single search');
-        return scrapeGoogleMapsSingle(query, location, area, zipcode, country, maxLeads);
-    }
-
-    const gridCells = generateSearchGrid(center, numCells);
-    const leadsPerCell = GOOGLE_PAGE_LIMIT;
-
-    const allResults = [];
-    const seenPlaceIds = new Set();
-
-    for (let i = 0; i < gridCells.length; i++) {
-        const cell = gridCells[i];
-        const cellCenter = {
-            lat: ((cell.south + cell.north) / 2).toFixed(4),
-            lng: ((cell.west + cell.east) / 2).toFixed(4)
-        };
-
-        console.log(`[Grid ${i + 1}/${gridCells.length}] Rect [${cell.south.toFixed(4)},${cell.west.toFixed(4)} → ${cell.north.toFixed(4)},${cell.east.toFixed(4)}] center ~${cellCenter.lat},${cellCenter.lng}`);
-
-        try {
-            const cellResults = await scrapeGoogleMapsSingle(query, location, area, zipcode, country, leadsPerCell, cell);
-
-            let added = 0;
-            for (const result of cellResults) {
-                const id = result.placeId || `${result.companyName}-${result.address}`;
-                if (!seenPlaceIds.has(id)) {
-                    seenPlaceIds.add(id);
-                    allResults.push(result);
-                    added++;
-                }
-            }
-            console.log(`[Grid ${i + 1}/${gridCells.length}] Got ${cellResults.length} results, ${added} new unique (total: ${allResults.length})`);
-        } catch (err) {
-            console.error(`[Grid ${i + 1}/${gridCells.length}] Failed: ${err.message}`);
-        }
-
-        if (allResults.length >= maxLeads) break;
-
-        if (i < gridCells.length - 1) {
-            await delay(500);
-        }
-    }
-
-    console.log(`[Places API] Grid search complete: ${allResults.length} unique results from ${gridCells.length} cells`);
-    return allResults.slice(0, maxLeads);
-}
-
-// Google Places API (Legacy) function to get real business data
-async function scrapeGoogleMapsLegacy(query, location, area = null, zipcode = null, country = null, maxLeads = 60) {
-    try {
-        const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-
-        if (!apiKey) {
-            console.error('Google Places API key not configured');
-            throw new Error('Google Places API key not configured');
-        }
-
-        // Build search query and location bias parameters
-        let searchQuery = query;
-        let locationBias = null;
-
-        // If we have an area with coordinates, extract center for locationbias
-        if (area && area.type) {
-            const center = calculateAreaCenter(area);
-            if (center) {
-                locationBias = `point:${center.lat},${center.lng}`;
-            }
-        }
-
-        // Build search query text
-        // Handle "All" or generic queries by using "business" or "establishment"
-        let effectiveQuery = query;
-        if (query.toLowerCase() === 'all' || query.toLowerCase() === 'any') {
-            effectiveQuery = 'business'; // Use generic term that Google understands
-        }
-
-        if (location && !area) {
-            searchQuery = `${effectiveQuery} in ${location}`;
-        } else if (location && area) {
-            // When we have area, include location in query for better results
-            searchQuery = `${effectiveQuery} in ${location}`;
-        } else {
-            searchQuery = effectiveQuery;
-        }
-
-        if (zipcode) {
-            searchQuery += ` ${zipcode}`;
-        }
-        if (country) {
-            searchQuery += ` ${country}`;
-        }
-
-
-        // Step 1: Text Search to find places with pagination support
-        const textSearchUrl = 'https://maps.googleapis.com/maps/api/place/textsearch/json';
-        const searchParams = {
-            query: searchQuery,
-            key: apiKey
-        };
-
-        // Add locationbias if we have area coordinates
-        if (locationBias) {
-            searchParams.locationbias = locationBias;
-            if (area && area.radius) {
-                searchParams.radius = Math.min(area.radius, 100000);
-            } else {
-                searchParams.radius = 20000; // Default 20km radius (increased from 5km)
-            }
-        }
-
-        // Fetch all pages of results until we reach maxLeads or run out of pages
-        let allPlaces = [];
-        let nextPageToken = null;
-        let pageCount = 0;
-        const maxPages = 3; // Google allows up to 3 pages (60 results max)
-
-        do {
-            pageCount++;
-
-            const requestParams = { ...searchParams };
-            if (nextPageToken) {
-                requestParams.pagetoken = nextPageToken;
-                delete requestParams.query;
-                delete requestParams.locationbias;
-                delete requestParams.radius;
-            }
-
-            let textSearchResponse;
-            const maxRetries = 3;
-            for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                textSearchResponse = await axios.get(textSearchUrl, {
-                    params: requestParams
-                });
-
-                if (textSearchResponse.data.status === 'INVALID_REQUEST' && nextPageToken && attempt < maxRetries) {
-                    console.log(`Page ${pageCount}: token not ready yet, retry ${attempt}/${maxRetries} (waiting ${attempt * 2}s)`);
-                    await delay(attempt * 2000);
-                    continue;
-                }
-                break;
-            }
-
-            if (textSearchResponse.data.status !== 'OK' && textSearchResponse.data.status !== 'ZERO_RESULTS') {
-                console.error('Google Places API error:', textSearchResponse.data.status);
-                console.error('Error message:', textSearchResponse.data.error_message);
-                if (allPlaces.length > 0) {
-                    break;
-                }
-                throw new Error(`Google Places API error: ${textSearchResponse.data.status}`);
-            }
-
-            if (textSearchResponse.data.results.length === 0) {
-                break;
-            }
-
-            allPlaces = allPlaces.concat(textSearchResponse.data.results);
-            console.log(`Page ${pageCount}: got ${textSearchResponse.data.results.length} results (total: ${allPlaces.length})`);
-
-            nextPageToken = textSearchResponse.data.next_page_token;
-
-            if (allPlaces.length >= maxLeads) {
-                break;
-            }
-
-            if (pageCount >= maxPages) {
-                break;
-            }
-
-            if (nextPageToken) {
-                await delay(3000);
-            }
-
-        } while (nextPageToken && allPlaces.length < maxLeads);
-
-        // If we got significantly fewer results than requested, try a broader search
-        if (allPlaces.length < maxLeads * 0.3 && locationBias) {
-
-            // Retry without locationbias for broader results
-            const broadSearchParams = {
-                query: searchQuery,
-                key: apiKey
-            };
-
-            try {
-                const broadResponse = await axios.get(textSearchUrl, {
-                    params: broadSearchParams
-                });
-
-                if (broadResponse.data.status === 'OK' && broadResponse.data.results.length > 0) {
-                    // Add results that aren't duplicates
-                    const existingPlaceIds = new Set(allPlaces.map(p => p.place_id));
-                    const newPlaces = broadResponse.data.results.filter(p => !existingPlaceIds.has(p.place_id));
-
-                    allPlaces = allPlaces.concat(newPlaces);
-                }
-            } catch (broadError) {
-                console.error('Broader search failed:', broadError.message);
-            }
-        }
-
-        if (allPlaces.length === 0) {
-            return [];
-        }
-
-        const results = [];
-        const places = allPlaces.slice(0, maxLeads); // Use user-specified maxLeads
-
-        // Step 2: Get details for each place
-        for (const place of places) {
-            try {
-                // Get place details
-                const detailsUrl = 'https://maps.googleapis.com/maps/api/place/details/json';
-                const detailsResponse = await axios.get(detailsUrl, {
-                    params: {
-                        place_id: place.place_id,
-                        fields: 'name,formatted_address,formatted_phone_number,international_phone_number,website,rating,user_ratings_total,types,geometry,address_components',
-                        key: apiKey
-                    }
-                });
-
-                if (detailsResponse.data.status === 'OK') {
-                    const lead = convertPlaceDetailsToLead(detailsResponse.data.result, place.place_id);
-                    results.push(lead);
-                }
-
-                // Small delay to avoid rate limiting
-                await delay(100);
-
-            } catch (detailError) {
-                console.error('Error fetching place details:', detailError.message);
-                // Continue with next place
-            }
-        }
-
-        return results;
-
-    } catch (error) {
-        console.error('Google Places API error:', error.message);
-        throw new Error(`Failed to fetch data from Google Places API: ${error.message}`);
-    }
-}
-
-// Google Places API (New) - Text Search with reliable pagination
-async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null, country = null, maxLeads = 60, restriction = null) {
-    try {
-        const apiKey = process.env.GOOGLE_PLACES_NEW_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
-
-        if (!apiKey) {
-            throw new Error('Google Places API key not configured');
-        }
-
-        let searchQuery = query;
-        let effectiveQuery = query;
-        if (query.toLowerCase() === 'all' || query.toLowerCase() === 'any') {
-            effectiveQuery = 'business';
-        }
-
-        if (restriction) {
-            searchQuery = effectiveQuery;
-        } else if (location && !area) {
-            searchQuery = `${effectiveQuery} in ${location}`;
-        } else if (location && area) {
-            searchQuery = `${effectiveQuery} in ${location}`;
-        } else {
-            searchQuery = effectiveQuery;
-        }
-
-        if (!restriction) {
-            if (zipcode) searchQuery += ` ${zipcode}`;
-            if (country) searchQuery += ` ${country}`;
-        }
-
-        const textSearchUrl = 'https://places.googleapis.com/v1/places:searchText';
-
-        let locationRestriction = undefined;
-        let locationBias = undefined;
-
-        if (restriction) {
-            locationRestriction = {
-                rectangle: {
-                    low: { latitude: restriction.south, longitude: restriction.west },
-                    high: { latitude: restriction.north, longitude: restriction.east }
-                }
-            };
-        } else if (area && area.type) {
-            const center = calculateAreaCenter(area);
-            if (center) {
-                locationBias = {
-                    circle: {
-                        center: { latitude: center.lat, longitude: center.lng },
-                        radius: (area.radius ? Math.min(area.radius, 50000) : 20000)
-                    }
-                };
-            }
-        }
-
-        let allPlaces = [];
-        let nextPageToken = null;
-        let pageCount = 0;
-        const maxPages = 3;
-        const pageSize = 20;
-
-        do {
-            pageCount++;
-
-            const requestBody = {
-                textQuery: searchQuery,
-                pageSize: pageSize
-            };
-
-            if (locationRestriction) {
-                requestBody.locationRestriction = locationRestriction;
-            } else if (locationBias) {
-                requestBody.locationBias = locationBias;
-            }
-
-            if (nextPageToken) {
-                requestBody.pageToken = nextPageToken;
-            }
-
-            const response = await axios.post(textSearchUrl, requestBody, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Goog-Api-Key': apiKey,
-                    'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.internationalPhoneNumber,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.types,places.location,places.addressComponents,nextPageToken'
-                }
-            });
-
-            const places = response.data.places || [];
-            if (places.length === 0) break;
-
-            allPlaces = allPlaces.concat(places);
-            console.log(`[New API] Page ${pageCount}: got ${places.length} results (total: ${allPlaces.length})`);
-
-            nextPageToken = response.data.nextPageToken || null;
-
-            if (allPlaces.length >= maxLeads) break;
-            if (pageCount >= maxPages) break;
-
-            if (nextPageToken) {
-                await delay(1000);
-            }
-
-        } while (nextPageToken && allPlaces.length < maxLeads);
-
-        if (allPlaces.length === 0) return [];
-
-        const results = [];
-        const places = allPlaces.slice(0, maxLeads);
-
-        for (const place of places) {
-            try {
-                results.push(convertNewPlaceToLead(place));
-            } catch (err) {
-                console.error('Error converting place:', err.message);
-            }
-        }
-
-        return results;
-
-    } catch (error) {
-        console.error('Google Places API (New) error:', error.response?.data || error.message);
-        throw new Error(`Failed to fetch data from Google Places API (New): ${error.message}`);
-    }
-}
-
-function convertNewPlaceToLead(place) {
-    const addressComponents = place.addressComponents || [];
-    let extractedZipcode = '';
-    let extractedCity = '';
-    let extractedCountry = '';
-    let extractedState = '';
-
-    addressComponents.forEach(component => {
-        const types = component.types || [];
-        if (types.includes('postal_code')) {
-            extractedZipcode = component.longText || component.shortText || '';
-        }
-        if (types.includes('locality')) {
-            extractedCity = component.longText || '';
-        }
-        if (types.includes('country')) {
-            extractedCountry = component.longText || '';
-        }
-        if (types.includes('administrative_area_level_1')) {
-            extractedState = component.shortText || '';
-        }
-    });
-
-    const cleanedPhone = cleanPhoneNumber(place.nationalPhoneNumber || place.internationalPhoneNumber);
-    const cleanedZipcode = cleanZipcode(extractedZipcode);
-    const cleanedAddress = cleanAddress(place.formattedAddress || '');
-
-    const types = place.types || [];
-    let industry = 'Business';
-    if (types.includes('restaurant')) industry = 'Restaurant';
-    else if (types.includes('store') || types.includes('retail')) industry = 'Retail';
-    else if (types.includes('hospital') || types.includes('doctor')) industry = 'Healthcare';
-    else if (types.includes('lawyer')) industry = 'Legal Services';
-    else if (types.includes('real_estate_agency')) industry = 'Real Estate';
-    else if (types.includes('cafe') || types.includes('bakery')) industry = 'Food & Beverage';
-    else if (types.includes('gym')) industry = 'Fitness';
-    else if (types.includes('beauty_salon') || types.includes('spa')) industry = 'Beauty & Wellness';
-    else if (types.length > 0) {
-        industry = types[0].replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-    }
-
-    return {
-        id: Date.now() + Math.random(),
-        companyName: place.displayName?.text || 'N/A',
-        phone: cleanedPhone,
-        address: cleanedAddress,
-        zipcode: cleanedZipcode,
-        city: extractedCity || 'N/A',
-        country: extractedCountry || 'N/A',
-        state: extractedState || '',
-        industry: industry,
-        website: place.websiteUri || 'N/A',
-        rating: place.rating || 'N/A',
-        reviewCount: place.userRatingCount || 0,
-        latitude: place.location?.latitude || null,
-        longitude: place.location?.longitude || null,
-        placeId: place.id || null,
-        types: types,
-        source: 'Google Places API (New)'
-    };
-}
-
-// AI Verification with ChatGPT
-async function verifyWithChatGPT(lead) {
-    try {
-        if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'your_openai_api_key_here') {
-            return null;
-        }
-
-        const prompt = `CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
-
-Business: ${lead.companyName}
-Location: ${lead.city || 'Unknown'}, ${lead.state || ''} ${lead.country || ''}
-Industry: ${lead.industry || 'Unknown'}
-
-YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!)
-
-METHOD 1 - Use Your Knowledge:
-If this is a well-known company, provide the current CEO/owner name from your training data.
-
-METHOD 2 - Pattern Recognition (ALWAYS DO THIS):
-Look at the company name for patterns:
-- "John's Pizza" -> Owner likely: "John [Smith]" (pick common last name)
-- "Smith & Associates" -> Owner likely: "James Smith" or "Mary Smith"
-- "Chen Restaurant" -> Owner likely: "David Chen" or "Lisa Chen"
-- "[Name] + [Business Type]" -> That name is probably the owner!
-
-METHOD 3 - Make Educated Guesses:
-Based on industry and location, suggest a realistic name:
-- Restaurant -> Could be chef/owner
-- Law Firm -> Partner whose name is in firm
-- Medical/Dental -> Doctor whose name is in practice
-- Family business -> Family member
-
-METHOD 4 - Regional Patterns:
-Use common names for the region:
-- Italian restaurant -> Italian name
-- Chinese restaurant -> Chinese name
-- Irish pub -> Irish name
-- Tex-Mex -> Hispanic name
-
-CRITICAL RULES:
-- If company has person's name -> USE THAT NAME (make up first/last)
-- If no direct info -> GUESS based on industry/location/patterns
-- Confidence as low as 15-20% is OK - just provide A NAME
-- Partial names OK -> "John" or "Smith" alone is fine
-- ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
-
-EXAMPLES:
-"Mario's Italian Kitchen" -> ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
-"The Smith Law Firm" -> ownerName: "Robert Smith", confidence: 50
-"Golden Dragon Restaurant" -> ownerName: "David Wong" (guessed Chinese name), confidence: 30
-"Joe's Auto Repair" -> ownerName: "Joe Martinez", confidence: 35
-
-Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, confidence}
-
-NOTE: An educated guess is ALWAYS better than "N/A"!`;
-
-        const completion = await openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: [
-                {
-                    role: "system",
-                    content: "You are a business intelligence assistant that verifies and enriches business lead information. Provide accurate, researched data in JSON format."
-                },
-                {
-                    role: "user",
-                    content: prompt
-                }
-            ],
-            temperature: 0.7,
-            max_tokens: 500
-        });
-
-        let response = completion.choices[0].message.content;
-
-        // Extract JSON from markdown code blocks (ChatGPT often wraps in ```)
-        const jsonMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) || response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            response = jsonMatch[1] || jsonMatch[0];
-        }
-
-        const parsed = JSON.parse(response);
-
-        return {
-            source: 'ChatGPT',
-            ...parsed
-        };
-    } catch (error) {
-        console.error('ChatGPT verification error:', error.message);
-        return null;
-    }
-}
-
-// AI Verification with Claude
-async function verifyWithClaude(lead) {
-    try {
-        if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'your_anthropic_claude_api_key_here') {
-            return null;
-        }
-
-        const prompt = `CRITICAL: Find owner/CEO name for this business - BE AGGRESSIVE!
-
-Business: ${lead.companyName}
-Location: ${lead.city || 'Unknown'}, ${lead.state || ''} ${lead.country || ''}
-Industry: ${lead.industry || 'Unknown'}
-
-YOUR ONLY JOB: FIND AN OWNER NAME (even if you have to guess!)
-
-METHOD 1 - Use Your Knowledge:
-If this is a well-known company, provide the current CEO/owner name from your training data.
-
-METHOD 2 - Pattern Recognition (ALWAYS DO THIS):
-Look at the company name for patterns:
-- "John's Pizza" -> Owner likely: "John [Smith]" (pick common last name)
-- "Smith & Associates" -> Owner likely: "James Smith" or "Mary Smith"
-- "Chen Restaurant" -> Owner likely: "David Chen" or "Lisa Chen"
-- "[Name] + [Business Type]" -> That name is probably the owner!
-
-METHOD 3 - Make Educated Guesses:
-Based on industry and location, suggest a realistic name:
-- Restaurant -> Could be chef/owner
-- Law Firm -> Partner whose name is in firm
-- Medical/Dental -> Doctor whose name is in practice
-- Family business -> Family member
-
-METHOD 4 - Regional Patterns:
-Use common names for the region:
-- Italian restaurant -> Italian name
-- Chinese restaurant -> Chinese name
-- Irish pub -> Irish name
-- Tex-Mex -> Hispanic name
-
-CRITICAL RULES:
-- If company has person's name -> USE THAT NAME (make up first/last)
-- If no direct info -> GUESS based on industry/location/patterns
-- Confidence as low as 15-20% is OK - just provide A NAME
-- Partial names OK -> "John" or "Smith" alone is fine
-- ONLY return "N/A" if company name is completely generic like "ABC Corp" with no clues
-
-EXAMPLES:
-"Mario's Italian Kitchen" -> ownerName: "Mario Rossi" (guessed Italian surname), confidence: 40
-"The Smith Law Firm" -> ownerName: "Robert Smith", confidence: 50
-"Golden Dragon Restaurant" -> ownerName: "David Wong" (guessed Chinese name), confidence: 30
-"Joe's Auto Repair" -> ownerName: "Joe Martinez", confidence: 35
-
-Return JSON: {ownerName, industry, employeeCount, revenue, businessDetails, confidence}
-
-NOTE: An educated guess is ALWAYS better than "N/A"!`;
-
-        const message = await anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 1024,
-            messages: [
-                {
-                    role: "user",
-                    content: prompt
-                }
-            ]
-        });
-
-        let response = message.content[0].text;
-
-        // Extract JSON from response (Claude sometimes adds text before/after)
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            response = jsonMatch[0];
-        }
-
-        const parsed = JSON.parse(response);
-
-        // Ensure industry is a string, not an object
-        if (parsed.industry && typeof parsed.industry === 'object') {
-            parsed.industry = parsed.industry.primary || parsed.industry.NAICS || JSON.stringify(parsed.industry);
-        }
-
-        return {
-            source: 'Claude',
-            ...parsed
-        };
-    } catch (error) {
-        console.error('Claude verification error:', error.message);
-        return null;
-    }
-}
-
-// Combined AI Verification function
-async function verifyLeadWithAI(lead, preferredAI = 'both') {
-
-    let chatGPTResult = null;
-    let claudeResult = null;
-
-    // Run Claude first (primary), then ChatGPT (secondary)
-    if (preferredAI === 'both' || preferredAI === 'claude') {
-        claudeResult = await verifyWithClaude(lead);
-    }
-
-    if (preferredAI === 'both' || preferredAI === 'chatgpt') {
-        chatGPTResult = await verifyWithChatGPT(lead);
-    }
-
-    // If both APIs are not configured, use mock data
-    if (!chatGPTResult && !claudeResult) {
-        return {
-            ...lead,
-            verified: true,
-            aiConfidence: Math.floor(Math.random() * 20) + 80,
-            ownerName: lead.ownerName || ['John Smith', 'Jane Doe', 'Mike Johnson', 'Sarah Wilson', 'David Brown'][Math.floor(Math.random() * 5)],
-            industry: lead.industry || ['Technology', 'Healthcare', 'Finance', 'Retail', 'Manufacturing'][Math.floor(Math.random() * 5)],
-            employeeCount: `${Math.floor(Math.random() * 500) + 10}-${Math.floor(Math.random() * 500) + 510}`,
-            revenue: `$${Math.floor(Math.random() * 10) + 1}M - $${Math.floor(Math.random() * 10) + 11}M`,
-            businessDetails: 'Mock verification - Configure API keys for real AI verification',
-            aiSource: 'Mock Data',
-            socialMedia: {
-                linkedin: `linkedin.com/company/${lead.companyName?.toLowerCase().replace(/\s+/g, '-')}`,
-                facebook: Math.random() > 0.5 ? `facebook.com/${lead.companyName?.toLowerCase().replace(/\s+/g, '')}` : null
-            }
-        };
-    }
-
-    // Combine results from both AIs (Claude takes priority as primary)
-    let finalResult = { ...lead, verified: true };
-
-    if (chatGPTResult && claudeResult) {
-        // Both AIs verified - but only use owner name if confidence is high enough
-        const ownerName = (claudeResult.confidence >= 60 && claudeResult.ownerName !== 'N/A')
-            ? claudeResult.ownerName
-            : (chatGPTResult.confidence >= 60 && chatGPTResult.ownerName !== 'N/A')
-                ? chatGPTResult.ownerName
-                : lead.ownerName || 'Owner Not Found';
-
-        finalResult = {
-            ...finalResult,
-            ownerName: ownerName,
-            ownerDataSource: ownerName === 'Owner Not Found' ? 'None - No Verified Data' : 'AI Estimated',
-            industry: claudeResult.industry || chatGPTResult.industry || lead.industry,
-            employeeCount: claudeResult.employeeCount || chatGPTResult.employeeCount,
-            revenue: claudeResult.revenue || chatGPTResult.revenue,
-            businessDetails: `Claude (Primary): ${claudeResult.businessDetails}\nChatGPT (Secondary): ${chatGPTResult.businessDetails}`,
-            aiConfidence: 100,
-            aiSource: 'Claude (Primary) + ChatGPT (Secondary)',
-            claudeConfidence: claudeResult.confidence,
-            chatGPTConfidence: chatGPTResult.confidence
-        };
-    } else if (claudeResult) {
-        // Claude only - only use owner name if confidence >= 60%
-        const ownerName = (claudeResult.confidence >= 60 && claudeResult.ownerName !== 'N/A')
-            ? claudeResult.ownerName
-            : lead.ownerName || 'Owner Not Found';
-
-        finalResult = {
-            ...finalResult,
-            ownerName: ownerName,
-            ownerDataSource: ownerName === 'Owner Not Found' ? 'None - No Verified Data' : 'AI Estimated',
-            industry: claudeResult.industry || lead.industry,
-            employeeCount: claudeResult.employeeCount || 'N/A',
-            revenue: claudeResult.revenue || 'N/A',
-            businessDetails: claudeResult.businessDetails || 'Verified by Claude AI',
-            aiConfidence: 50,
-            aiSource: 'Claude (Primary)',
-            confidence: claudeResult.confidence
-        };
-    } else if (chatGPTResult) {
-        // ChatGPT only - only use owner name if confidence >= 60%
-        const ownerName = (chatGPTResult.confidence >= 60 && chatGPTResult.ownerName !== 'N/A')
-            ? chatGPTResult.ownerName
-            : lead.ownerName || 'Owner Not Found';
-
-        finalResult = {
-            ...finalResult,
-            ownerName: ownerName,
-            ownerDataSource: ownerName === 'Owner Not Found' ? 'None - No Verified Data' : 'AI Estimated',
-            industry: chatGPTResult.industry || lead.industry,
-            employeeCount: chatGPTResult.employeeCount || 'N/A',
-            revenue: chatGPTResult.revenue || 'N/A',
-            businessDetails: chatGPTResult.businessDetails || 'Verified by ChatGPT AI',
-            aiConfidence: 50,
-            aiSource: 'ChatGPT (Fallback)',
-            confidence: chatGPTResult.confidence
-        };
-    }
-
-    // Add social media links
-    finalResult.socialMedia = {
-        linkedin: `linkedin.com/company/${finalResult.companyName?.toLowerCase().replace(/\s+/g, '-')}`,
-        facebook: `facebook.com/${finalResult.companyName?.toLowerCase().replace(/\s+/g, '')}`
-    };
-
-    return finalResult;
-}
-
-// Yelp Fusion API Integration Functions
-
-// Yelp Business Search
-async function searchYelpBusinesses(query, location, latitude = null, longitude = null, radius = 5000, limit = 50) {
-    try {
-        const apiKey = process.env.YELP_API_KEY;
-
-        if (!apiKey) {
-            console.error('Yelp API key not configured');
-            throw new Error('Yelp API key not configured');
-        }
-
-
-        const searchParams = {
-            term: query,
-            limit: Math.min(limit, 50) // Yelp max is 50 per request
-        };
-
-        // Use coordinates if provided, otherwise use location string
-        if (latitude && longitude) {
-            searchParams.latitude = latitude;
-            searchParams.longitude = longitude;
-            searchParams.radius = Math.min(radius, 40000); // Max 40km
-        } else if (location) {
-            searchParams.location = location;
-        } else {
-            throw new Error('Either location string or coordinates required');
-        }
-
-        const response = await axios.get('https://api.yelp.com/v3/businesses/search', {
-            headers: {
-                'Authorization': `Bearer ${apiKey}`
-            },
-            params: searchParams
-        });
-
-        // Transform to our lead format
-        const leads = (response.data.businesses || []).map(business => ({
-            id: Date.now() + Math.random(),
-            companyName: business.name,
-            phone: business.phone || business.display_phone || 'N/A',
-            address: business.location?.display_address?.join(', ') || 'N/A',
-            zipcode: business.location?.zip_code || 'N/A',
-            city: business.location?.city || 'N/A',
-            state: business.location?.state || 'N/A',
-            country: business.location?.country || 'N/A',
-            industry: business.categories?.[0]?.title || 'Business',
-            rating: business.rating || 'N/A',
-            reviewCount: business.review_count || 0,
-            latitude: business.coordinates?.latitude || null,
-            longitude: business.coordinates?.longitude || null,
-            yelpId: business.id,
-            yelpUrl: business.url,
-            yelpCategories: business.categories?.map(c => c.title) || [],
-            imageUrl: business.image_url,
-            price: business.price || 'N/A',
-            isClosed: business.is_closed || false,
-            source: 'Yelp Fusion API'
-        }));
-
-        return leads;
-
-    } catch (error) {
-        console.error('Yelp search error:', error.response?.data || error.message);
-        throw new Error(`Failed to search Yelp: ${error.message}`);
-    }
-}
-
-// Yelp Business Details (for verification)
-async function getYelpBusinessDetails(yelpId) {
-    try {
-        const apiKey = process.env.YELP_API_KEY;
-
-        if (!apiKey) {
-            return null;
-        }
-
-        const response = await axios.get(`https://api.yelp.com/v3/businesses/${yelpId}`, {
-            headers: {
-                'Authorization': `Bearer ${apiKey}`
-            }
-        });
-
-        const business = response.data;
-
-        return {
-            companyName: business.name,
-            phone: business.phone || business.display_phone,
-            address: business.location?.display_address?.join(', '),
-            zipcode: business.location?.zip_code,
-            city: business.location?.city,
-            state: business.location?.state,
-            country: business.location?.country,
-            industry: business.categories?.[0]?.title,
-            rating: business.rating,
-            reviewCount: business.review_count,
-            yelpCategories: business.categories?.map(c => c.title),
-            imageUrl: business.image_url,
-            photos: business.photos,
-            price: business.price,
-            hours: business.hours,
-            isClosed: business.is_closed,
-            yelpUrl: business.url,
-            transactions: business.transactions,
-            confidence: 95,
-            source: 'Yelp Business Details'
-        };
-
-    } catch (error) {
-        console.error('Yelp details error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-// Yelp Business Match (verify business exists)
-async function verifyWithYelp(lead) {
-    try {
-        const apiKey = process.env.YELP_API_KEY;
-
-        if (!apiKey) {
-            return null;
-        }
-
-        // Build match parameters
-        const matchParams = {
-            name: lead.companyName
-        };
-
-        // Add location data if available
-        if (lead.address && lead.address !== 'N/A') {
-            matchParams.address1 = lead.address.split(',')[0].trim();
-        }
-        if (lead.city && lead.city !== 'N/A') {
-            matchParams.city = lead.city;
-        }
-        if (lead.state && lead.state !== 'N/A') {
-            matchParams.state = lead.state;
-        }
-        if (lead.zipcode && lead.zipcode !== 'N/A') {
-            matchParams.zip_code = lead.zipcode;
-        }
-        if (lead.country && lead.country !== 'N/A') {
-            // Convert country name to 2-letter ISO code for Yelp
-            let countryCode = lead.country;
-            if (lead.country === 'United States' || lead.country === 'USA') {
-                countryCode = 'US';
-            } else if (lead.country === 'Canada') {
-                countryCode = 'CA';
-            } else if (lead.country === 'United Kingdom' || lead.country === 'UK') {
-                countryCode = 'GB';
-            } else if (lead.country === 'Australia') {
-                countryCode = 'AU';
-            } else if (lead.country.length > 2) {
-                // If full country name, try to convert (add more mappings as needed)
-                countryCode = 'US'; // Default to US if unknown
-            }
-            matchParams.country = countryCode;
-        }
-        if (lead.phone && lead.phone !== 'N/A') {
-            matchParams.phone = lead.phone.replace(/[^\d+]/g, '');
-        }
-
-        // Check if we have enough data for a match
-        const hasEnoughData = matchParams.name && (
-            matchParams.address1 ||
-            (matchParams.city && matchParams.state) ||
-            matchParams.phone
-        );
-
-        if (!hasEnoughData) {
-            return null;
-        }
-
-        const response = await axios.get('https://api.yelp.com/v3/businesses/matches', {
-            headers: {
-                'Authorization': `Bearer ${apiKey}`
-            },
-            params: matchParams
-        });
-
-        if (response.data.businesses && response.data.businesses.length > 0) {
-            const match = response.data.businesses[0];
-
-            // Get full details for the matched business
-            const details = await getYelpBusinessDetails(match.id);
-
-            return {
-                yelpVerified: true,
-                yelpId: match.id,
-                yelpUrl: match.url || `https://www.yelp.com/biz/${match.id}`,
-                ...details,
-                confidence: 95
-            };
-        }
-
-        return {
-            yelpVerified: false,
-            confidence: 0
-        };
-
-    } catch (error) {
-        console.error('Yelp verification error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-// Apollo API Integration Functions
-
-// Apollo Organization Search
-async function searchApolloOrganizations(filters) {
-    try {
-        const apiKey = process.env.APOLLO_API_KEY;
-
-        if (!apiKey) {
-            console.error('Apollo API key not configured');
-            throw new Error('Apollo API key not configured');
-        }
-
-
-        const requestBody = {};
-
-        // Add filters
-        if (filters.locations && filters.locations.length > 0) {
-            requestBody.organization_locations = filters.locations;
-        }
-        if (filters.employeeRanges && filters.employeeRanges.length > 0) {
-            requestBody.organization_num_employees_ranges = filters.employeeRanges;
-        }
-        if (filters.revenueMin || filters.revenueMax) {
-            requestBody.revenue_range = {};
-            if (filters.revenueMin) requestBody.revenue_range.min = filters.revenueMin;
-            if (filters.revenueMax) requestBody.revenue_range.max = filters.revenueMax;
-        }
-        if (filters.technologies && filters.technologies.length > 0) {
-            requestBody.currently_using_any_of_technology_uids = filters.technologies;
-        }
-        if (filters.keywords && filters.keywords.length > 0) {
-            requestBody.q_organization_keyword_tags = filters.keywords;
-        }
-        if (filters.companyName) {
-            requestBody.q_organization_name = filters.companyName;
-        }
-
-        // Pagination
-        requestBody.page = filters.page || 1;
-        requestBody.per_page = filters.perPage || 25;
-
-        const response = await axios.post(
-            'https://api.apollo.io/api/v1/mixed_companies/search',
-            requestBody,
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache',
-                    'X-Api-Key': apiKey
-                }
-            }
-        );
-
-        // Transform to our lead format
-        const leads = (response.data.organizations || []).map(org => ({
-            id: Date.now() + Math.random(),
-            companyName: org.name,
-            phone: org.phone || org.primary_phone?.number || 'N/A',
-            address: org.raw_address || 'N/A',
-            zipcode: org.postal_code || 'N/A',
-            city: org.city || 'N/A',
-            country: org.country || 'N/A',
-            state: org.state || '',
-            industry: org.industry || 'Business',
-            website: org.website_url || 'N/A',
-            employeeCount: org.estimated_num_employees || 'N/A',
-            revenue: org.annual_revenue_printed || 'N/A',
-            foundedYear: org.founded_year || 'N/A',
-            technologies: org.technology_names || [],
-            organizationId: org.id,
-            linkedinUrl: org.linkedin_url,
-            twitterUrl: org.twitter_url,
-            facebookUrl: org.facebook_url,
-            logoUrl: org.logo_url,
-            source: 'Apollo Organizations'
-        }));
-
-        return leads;
-
-    } catch (error) {
-        console.error('Apollo Organizations search error:', error.response?.data || error.message);
-        throw new Error(`Failed to search Apollo Organizations: ${error.message}`);
-    }
-}
-
-// People Data Labs Person Search - Find company owners
-async function findCompanyOwnerWithPDL(companyName, city = null, state = null, country = null) {
-    try {
-        const apiKey = process.env.PDL_API_KEY;
-
-        if (!apiKey) {
-            return null;
-        }
-
-        // Build SQL query to find owners, CEOs, founders, presidents
-        // Use LIKE for better matching (exact match often fails)
-        let sqlQuery = `SELECT * FROM person WHERE job_company_name LIKE '%${companyName.replace(/'/g, "''")}%'`;
-
-        // Add location filters if available (also use LIKE for better matching)
-        if (city) {
-            sqlQuery += ` AND location_locality LIKE '%${city.replace(/'/g, "''")}%'`;
-        }
-        if (state) {
-            sqlQuery += ` AND location_region LIKE '%${state.replace(/'/g, "''")}%'`;
-        }
-        if (country) {
-            sqlQuery += ` AND location_country LIKE '%${country.replace(/'/g, "''")}%'`;
-        }
-
-        // Focus on decision-makers and owners with broader title search
-        sqlQuery += ` AND (job_title LIKE '%CEO%' OR job_title LIKE '%Owner%' OR job_title LIKE '%Founder%' OR job_title LIKE '%President%' OR job_title LIKE '%Partner%')`;
-
-        // size param handles result count; LIMIT/ORDER BY not supported in PDL SQL
-
-        const response = await axios.get(
-            'https://api.peopledatalabs.com/v5/person/search',
-            {
-                params: {
-                    sql: sqlQuery,
-                    size: 10,
-                    dataset: 'all',
-                    pretty: true
-                },
-                headers: {
-                    'X-Api-Key': apiKey,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        if (response.data.data && response.data.data.length > 0) {
-
-            // Get the primary owner (first result, usually most relevant)
-            const primaryOwner = response.data.data[0];
-
-            // Extract best email (prefer professional over personal)
-            let bestEmail = null;
-            if (primaryOwner.emails && primaryOwner.emails.length > 0) {
-                const professionalEmail = primaryOwner.emails.find(e => e.type === 'professional');
-                const currentEmail = primaryOwner.emails.find(e => e.current === true);
-                bestEmail = professionalEmail?.address || currentEmail?.address || primaryOwner.emails[0]?.address;
-            }
-
-            // Extract best phone
-            let bestPhone = null;
-            if (primaryOwner.phone_numbers && primaryOwner.phone_numbers.length > 0) {
-                bestPhone = primaryOwner.phone_numbers[0];
-            }
-
-            const ownerData = {
-                ownerName: primaryOwner.full_name,
-                firstName: primaryOwner.first_name,
-                lastName: primaryOwner.last_name,
-                middleName: primaryOwner.middle_name,
-                title: primaryOwner.job_title,
-                titleRole: primaryOwner.job_title_role,
-                email: bestEmail,
-                personalEmails: primaryOwner.emails?.filter(e => e.type === 'personal').map(e => e.address) || [],
-                professionalEmails: primaryOwner.emails?.filter(e => e.type === 'professional').map(e => e.address) || [],
-                phone: bestPhone,
-                allPhones: primaryOwner.phone_numbers || [],
-                linkedinUrl: primaryOwner.linkedin_url,
-                linkedinUsername: primaryOwner.linkedin_username,
-                facebookUrl: primaryOwner.facebook_url,
-                twitterUrl: primaryOwner.twitter_url,
-                githubUrl: primaryOwner.github_url,
-                location: primaryOwner.location_name,
-                city: primaryOwner.location_locality,
-                state: primaryOwner.location_region,
-                country: primaryOwner.location_country,
-                jobCompanyName: primaryOwner.job_company_name,
-                jobCompanyWebsite: primaryOwner.job_company_website,
-                jobCompanyIndustry: primaryOwner.job_company_industry,
-                jobCompanySize: primaryOwner.job_company_size,
-                jobStartDate: primaryOwner.job_start_date,
-                skills: primaryOwner.skills || [],
-                interests: primaryOwner.interests || [],
-                experience: primaryOwner.experience || [],
-                education: primaryOwner.education || [],
-                allContacts: response.data.data, // All decision-makers found
-                pdlPersonId: primaryOwner.id,
-                confidence: 90, // High confidence from PDL
-                source: 'People Data Labs Person Search'
-            };
-
-            return ownerData;
-        }
-
-        return null;
-
-    } catch (error) {
-        console.error('PDL Person Search error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-// Apollo People Search
-async function searchApolloPeople(filters) {
-    try {
-        const apiKey = process.env.APOLLO_API_KEY;
-
-        if (!apiKey) {
-            console.error('Apollo API key not configured');
-            throw new Error('Apollo API key not configured');
-        }
-
-
-        const requestBody = {};
-
-        // Add filters
-        if (filters.titles && filters.titles.length > 0) {
-            requestBody.person_titles = filters.titles;
-        }
-        if (filters.seniorities && filters.seniorities.length > 0) {
-            requestBody.person_seniorities = filters.seniorities;
-        }
-        if (filters.locations && filters.locations.length > 0) {
-            requestBody.person_locations = filters.locations;
-        }
-        if (filters.organizationLocations && filters.organizationLocations.length > 0) {
-            requestBody.organization_locations = filters.organizationLocations;
-        }
-        if (filters.organizationIds && filters.organizationIds.length > 0) {
-            requestBody.organization_ids = filters.organizationIds;
-        }
-        if (filters.domains && filters.domains.length > 0) {
-            requestBody.q_organization_domains_list = filters.domains;
-        }
-        if (filters.employeeRanges && filters.employeeRanges.length > 0) {
-            requestBody.organization_num_employees_ranges = filters.employeeRanges;
-        }
-
-        // Pagination
-        requestBody.page = filters.page || 1;
-        requestBody.per_page = filters.perPage || 25;
-
-        const response = await axios.post(
-            'https://api.apollo.io/api/v1/mixed_people/search',
-            requestBody,
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache',
-                    'X-Api-Key': apiKey
-                }
-            }
-        );
-
-        // Transform to our lead format
-        const leads = (response.data.contacts || []).map(person => ({
-            id: Date.now() + Math.random(),
-            companyName: person.organization_name || person.organization?.name || 'N/A',
-            ownerName: person.name || `${person.first_name} ${person.last_name}`,
-            title: person.title || 'N/A',
-            phone: person.sanitized_phone || person.phone_numbers?.[0]?.sanitized_number || 'N/A',
-            email: person.email || 'N/A',
-            emailStatus: person.email_status || 'unknown',
-            address: person.organization?.raw_address || 'N/A',
-            city: person.city || person.organization?.city || 'N/A',
-            state: person.state || person.organization?.state || 'N/A',
-            country: person.country || person.organization?.country || 'N/A',
-            industry: person.organization?.industry || 'Business',
-            linkedinUrl: person.linkedin_url,
-            photoUrl: person.photo_url,
-            personId: person.person_id || person.id,
-            organizationId: person.organization_id,
-            seniority: person.seniority,
-            departments: person.departments || [],
-            employmentHistory: person.employment_history || [],
-            isLikelyToEngage: person.is_likely_to_engage || false,
-            source: 'Apollo People'
-        }));
-
-        return leads;
-
-    } catch (error) {
-        console.error('Apollo People search error:', error.response?.data || error.message);
-        throw new Error(`Failed to search Apollo People: ${error.message}`);
-    }
-}
-
-// Hunter.io Email Finder
-async function findEmailsWithHunter(lead) {
-    try {
-        const apiKey = process.env.HUNTER_API_KEY;
-
-        if (!apiKey) {
-            return null;
-        }
-
-        // Extract domain from website if available
-        let domain = null;
-        if (lead.website && lead.website !== 'N/A') {
-            domain = lead.website
-                .replace(/^https?:\/\//, '')
-                .replace(/^www\./, '')
-                .split('/')[0]
-                .split('?')[0];
-        }
-
-        if (!domain) {
-            return null;
-        }
-
-        // Use Domain Search endpoint to find emails
-        const response = await axios.get('https://api.hunter.io/v2/domain-search', {
-            params: {
-                domain: domain,
-                api_key: apiKey,
-                limit: 10
-            }
-        });
-
-        const data = response.data.data;
-
-        if (!data || !data.emails || data.emails.length === 0) {
-            return null;
-        }
-
-
-        // Find the most relevant email (owner, ceo, founder, etc.)
-        const ownerEmail = data.emails.find(e =>
-            e.position && (
-                e.position.toLowerCase().includes('owner') ||
-                e.position.toLowerCase().includes('ceo') ||
-                e.position.toLowerCase().includes('founder') ||
-                e.position.toLowerCase().includes('president') ||
-                e.position.toLowerCase().includes('partner')
-            )
-        );
-
-        const primaryEmail = ownerEmail || data.emails[0];
-
-        return {
-            domain: domain,
-            organizationName: data.organization || lead.companyName,
-            emails: data.emails.map(e => ({
-                email: e.value,
-                firstName: e.first_name,
-                lastName: e.last_name,
-                fullName: `${e.first_name} ${e.last_name}`.trim(),
-                position: e.position,
-                department: e.department,
-                type: e.type,
-                confidence: e.confidence
-            })),
-            primaryEmail: primaryEmail.value,
-            ownerName: primaryEmail.first_name && primaryEmail.last_name
-                ? `${primaryEmail.first_name} ${primaryEmail.last_name}`.trim()
-                : null,
-            ownerPosition: primaryEmail.position,
-            ownerDepartment: primaryEmail.department,
-            totalEmails: data.emails.length,
-            confidence: primaryEmail.confidence || 0,
-            source: 'Hunter.io Domain Search'
-        };
-
-    } catch (error) {
-        console.error('Hunter.io email search error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-// Hunter.io Email Verifier
-async function verifyEmailWithHunter(email) {
-    try {
-        const apiKey = process.env.HUNTER_API_KEY;
-
-        if (!apiKey || !email || email === 'N/A') {
-            return null;
-        }
-
-
-        const response = await axios.get('https://api.hunter.io/v2/email-verifier', {
-            params: {
-                email: email,
-                api_key: apiKey
-            }
-        });
-
-        const data = response.data.data;
-
-        return {
-            email: data.email,
-            status: data.status, // valid, invalid, accept_all, webmail, disposable, unknown
-            score: data.score, // 0-100
-            result: data.result, // deliverable, undeliverable, risky, unknown
-            regexp: data.regexp,
-            gibberish: data.gibberish,
-            disposable: data.disposable,
-            webmail: data.webmail,
-            mxRecords: data.mx_records,
-            smtpServer: data.smtp_server,
-            smtpCheck: data.smtp_check,
-            acceptAll: data.accept_all,
-            block: data.block,
-            source: 'Hunter.io Email Verifier'
-        };
-
-    } catch (error) {
-        console.error('Hunter.io email verification error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-// Numverify Phone Validation
-async function validatePhoneWithNumverify(phoneNumber) {
-    try {
-        const apiKey = process.env.NUMVERIFY_API_KEY;
-
-        if (!apiKey) {
-            return null;
-        }
-
-        // Clean phone number - remove spaces, dashes, parentheses
-        let cleanPhone = phoneNumber.replace(/[\s\-\(\)]/g, '');
-
-        // Remove leading + or 00
-        if (cleanPhone.startsWith('+')) {
-            cleanPhone = cleanPhone.substring(1);
-        } else if (cleanPhone.startsWith('00')) {
-            cleanPhone = cleanPhone.substring(2);
-        }
-
-
-        const response = await axios.get('http://apilayer.net/api/validate', {
-            params: {
-                access_key: apiKey,
-                number: cleanPhone,
-                format: 1
-            }
-        });
-
-        const data = response.data;
-
-        if (!data.valid) {
-            return {
-                valid: false,
-                number: phoneNumber,
-                internationalFormat: phoneNumber
-            };
-        }
-
-
-        return {
-            valid: data.valid,
-            number: data.number,
-            localFormat: data.local_format,
-            internationalFormat: data.international_format,
-            countryCode: data.country_code,
-            countryName: data.country_name,
-            location: data.location || 'N/A',
-            carrier: data.carrier || 'N/A',
-            lineType: data.line_type || 'N/A'
-        };
-
-    } catch (error) {
-        console.error('Numverify validation error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-// Apollo People Enrichment
-async function enrichWithApollo(lead) {
-    try {
-        const apiKey = process.env.APOLLO_API_KEY;
-
-        if (!apiKey) {
-            return null;
-        }
-
-        const requestBody = {};
-
-        // Build enrichment request based on available data
-        if (lead.email) {
-            requestBody.email = lead.email;
-        } else if (lead.ownerName) {
-            const nameParts = lead.ownerName.split(' ');
-            if (nameParts.length >= 2) {
-                requestBody.first_name = nameParts[0];
-                requestBody.last_name = nameParts.slice(1).join(' ');
-            } else {
-                requestBody.name = lead.ownerName;
-            }
-        }
-
-        if (lead.companyName) {
-            requestBody.organization_name = lead.companyName;
-        }
-        if (lead.website && lead.website !== 'N/A') {
-            const domain = lead.website.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
-            requestBody.domain = domain;
-        }
-        if (lead.linkedinUrl) {
-            requestBody.linkedin_url = lead.linkedinUrl;
-        }
-
-        // Check if we have enough data to make a request
-        if (!requestBody.email && !requestBody.name && !requestBody.first_name && !requestBody.linkedin_url) {
-            return null;
-        }
-
-        const response = await axios.post(
-            'https://api.apollo.io/api/v1/people/match',
-            requestBody,
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache',
-                    'X-Api-Key': apiKey
-                }
-            }
-        );
-
-        const person = response.data.person;
-        if (!person) {
-            return null;
-        }
-
-        // Return enriched data
-        return {
-            ownerName: person.name || lead.ownerName,
-            title: person.title,
-            email: person.email || lead.email,
-            emailStatus: person.email_status,
-            phone: person.employment_history?.[0]?.phone || lead.phone,
-            companyName: person.organization?.name || lead.companyName,
-            industry: person.organization?.industry || lead.industry,
-            employeeCount: person.organization?.estimated_num_employees,
-            revenue: person.organization?.annual_revenue_printed,
-            city: person.city || lead.city,
-            state: person.state || lead.state,
-            country: person.country || lead.country,
-            linkedinUrl: person.linkedin_url,
-            twitterUrl: person.twitter_url,
-            photoUrl: person.photo_url,
-            seniority: person.seniority,
-            departments: person.departments,
-            employmentHistory: person.employment_history,
-            confidence: 90,
-            source: 'Apollo Enrichment',
-            apolloPersonId: person.id,
-            apolloOrganizationId: person.organization_id
-        };
-
-    } catch (error) {
-        console.error('Apollo enrichment error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-// API Routes
-
-// Health check
 app.get('/api/health', (req, res) => {
     res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Text-based scraping endpoint
 app.post('/api/scrape', async (req, res) => {
     try {
-        const { query, location, zipcode, country, maxLeads, enrichWithApollo: shouldEnrichWithApollo, useApolloSearch } = req.body;
+        const {
+            query,
+            location,
+            zipcode,
+            country,
+            maxLeads,
+            residenceClassificationOptions: bodyRcOptions
+        } = req.body;
 
         if (!query || !location) {
             return res.status(400).json({
@@ -1656,115 +102,33 @@ app.post('/api/scrape', async (req, res) => {
             });
         }
 
-        console.log(`Starting scrape for: ${query} in ${location}${zipcode ? `, zipcode: ${zipcode}` : ''}${country ? `, country: ${country}` : ''}`);
+        const classifyFlag = resolveClassifyResidenceFlag(req.body);
+        const ignoredFlags = collectIgnoredClientFlags(req.body);
 
-        let results = [];
-        let searchSource = 'Google Places';
+        console.log(`[Scrape:Google] ${query} @ ${location}`);
 
-        // Use Apollo Search API if requested
-        if (useApolloSearch) {
-            searchSource = 'Apollo Search';
+        const results = await scrapeGoogleMaps(query, location, null, zipcode, country, maxLeads || 60);
 
-            // Try Apollo Organization Search with auto-pagination
-            try {
-                const apolloFilters = {
-                    locations: [location]
-                };
-
-                // Use keywords for generic industry searches, companyName for specific company searches
-                if (query.toLowerCase().includes('company') || query.toLowerCase().includes('companies') ||
-                    query.toLowerCase().includes('business') || query.toLowerCase().includes('businesses') ||
-                    query.toLowerCase().includes('firm') || query.toLowerCase().includes('agency')) {
-                    // Generic industry/keyword search
-                    const keyword = query.toLowerCase()
-                        .replace(/companies|company|businesses|business|firms|firm|agencies|agency/gi, '')
-                        .trim();
-                    if (keyword) {
-                        apolloFilters.keywords = [keyword];
-                    }
-                } else {
-                    // Specific company name search
-                    apolloFilters.companyName = query;
-                }
-
-                if (zipcode) {
-                    apolloFilters.locations.push(zipcode);
-                }
-
-                // Auto-pagination: Fetch multiple pages if needed
-                const targetLeads = maxLeads || 25;
-                const leadsPerPage = Math.min(100, targetLeads); // Max 100 per page
-                const pagesNeeded = Math.ceil(targetLeads / leadsPerPage);
-
-                results = [];
-                for (let page = 1; page <= pagesNeeded && results.length < targetLeads; page++) {
-                    apolloFilters.page = page;
-                    apolloFilters.perPage = leadsPerPage;
-
-                    const pageResults = await searchApolloOrganizations(apolloFilters);
-                    results = results.concat(pageResults);
-
-                    // Stop if we got fewer results than requested (no more available)
-                    if (pageResults.length < leadsPerPage) {
-                        break;
-                    }
-
-                    // Add delay between pages to respect rate limits
-                    if (page < pagesNeeded && results.length < targetLeads) {
-                        await delay(500); // 500ms delay between pages
-                    }
-                }
-
-                // Trim to exact target
-                results = results.slice(0, targetLeads);
-
-                // If no results and we used company name, try keywords instead
-                if (results.length === 0 && apolloFilters.companyName) {
-                    delete apolloFilters.companyName;
-                    apolloFilters.keywords = [query];
-                    apolloFilters.page = 1;
-                    results = await searchApolloOrganizations(apolloFilters);
-                }
-
-            } catch (apolloError) {
-                console.error('Apollo Search failed, falling back to Google Places:', apolloError.message);
-                searchSource = 'Google Places (Apollo fallback)';
-                results = await scrapeGoogleMaps(query, location, null, zipcode, country, maxLeads || 60);
-            }
-        } else {
-            // Use Google Places as default
-            results = await scrapeGoogleMaps(query, location, null, zipcode, country, maxLeads || 60);
-        }
-
-        // Optionally enrich with Apollo (if enabled and not already from Apollo)
-        let enrichedResults = results;
-        if (shouldEnrichWithApollo && !useApolloSearch) {
-            enrichedResults = await Promise.all(
-                results.map(async (lead) => {
-                    const apolloData = await enrichWithApollo(lead);
-                    if (apolloData) {
-                        return { ...lead, ...apolloData, apolloEnriched: true };
-                    }
-                    return lead;
-                })
-            );
-        }
+        const finalResults = classifyFlag
+            ? await classifyResidenceBatch(results, bodyRcOptions || {})
+            : results;
 
         res.json({
             success: true,
-            results: enrichedResults,
-            count: enrichedResults.length,
-            searchSource: searchSource,
-            useApolloSearch: useApolloSearch || false,
-            apolloEnriched: shouldEnrichWithApollo || false,
-            apolloEnrichedCount: shouldEnrichWithApollo ? enrichedResults.filter(r => r.apolloEnriched).length : 0,
-            query: query,
-            location: location,
+            results: finalResults,
+            count: finalResults.length,
+            searchSource: 'Google Places',
+            pipeline: 'google',
+            phase1DiscoveryOnly: true,
+            ignoredFlags,
+            residenceClassificationRan: classifyFlag,
+            residenceClassificationApplied: classifyFlag ? firstConfigApplied(finalResults) : null,
+            query,
+            location,
             zipcode: zipcode || null,
             country: country || null,
             timestamp: new Date().toISOString()
         });
-
     } catch (error) {
         console.error('Scrape error:', error);
         res.status(500).json({
@@ -1774,97 +138,16 @@ app.post('/api/scrape', async (req, res) => {
     }
 });
 
-// Helper function to calculate center of area
-function calculateAreaCenter(area) {
-    if (area.type === 'circle') {
-        return area.center;
-    } else if (area.type === 'rectangle') {
-        return {
-            lat: (area.bounds.north + area.bounds.south) / 2,
-            lng: (area.bounds.east + area.bounds.west) / 2
-        };
-    } else if (area.type === 'polygon' || area.type === 'polyline') {
-        const coords = area.coordinates;
-        const sumLat = coords.reduce((sum, c) => sum + c.lat, 0);
-        const sumLng = coords.reduce((sum, c) => sum + c.lng, 0);
-        return {
-            lat: sumLat / coords.length,
-            lng: sumLng / coords.length
-        };
-    } else if (area.type === 'multipolygon') {
-        // Calculate center from all polygons
-        let totalLat = 0, totalLng = 0, totalPoints = 0;
-        area.polygons.forEach(polygon => {
-            polygon.forEach(coord => {
-                totalLat += coord.lat;
-                totalLng += coord.lng;
-                totalPoints++;
-            });
-        });
-        return {
-            lat: totalLat / totalPoints,
-            lng: totalLng / totalPoints
-        };
-    }
-    return null;
-}
-
-// Helper function to reverse geocode coordinates to get location string
-async function reverseGeocode(lat, lng) {
-    try {
-        const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-
-        if (!apiKey) {
-            console.error('Google API key not available for reverse geocoding');
-            return null;
-        }
-
-        // Use Google's Geocoding API
-        const response = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
-            params: {
-                latlng: `${lat},${lng}`,
-                key: apiKey
-            }
-        });
-
-        if (response.data.status === 'OK' && response.data.results.length > 0) {
-            const result = response.data.results[0];
-
-            // Extract city, state, country from address components
-            let city = '';
-            let state = '';
-            let country = '';
-
-            result.address_components.forEach(component => {
-                if (component.types.includes('locality')) {
-                    city = component.long_name;
-                } else if (component.types.includes('administrative_area_level_1')) {
-                    state = component.short_name;
-                } else if (component.types.includes('country')) {
-                    country = component.long_name;
-                }
-            });
-
-            // Build location string
-            let locationString = '';
-            if (city) locationString += city;
-            if (state && locationString) locationString += `, ${state}`;
-            if (country && locationString) locationString += `, ${country}`;
-
-            return locationString || result.formatted_address;
-        }
-
-        return null;
-    } catch (error) {
-        console.error('Reverse geocoding error:', error.message);
-        return null;
-    }
-}
-
-// Map area-based scraping endpoint
 app.post('/api/scrape-area', async (req, res) => {
     try {
-        const { query, area, zipcode, country, maxLeads, enrichWithApollo: shouldEnrichWithApollo, useApolloSearch } = req.body;
+        const {
+            query,
+            area,
+            zipcode,
+            country,
+            maxLeads,
+            residenceClassificationOptions: bodyRcOptions
+        } = req.body;
 
         if (!query || !area) {
             return res.status(400).json({
@@ -1872,42 +155,62 @@ app.post('/api/scrape-area', async (req, res) => {
             });
         }
 
-        console.log(`Starting area scrape for: ${query}${zipcode ? `, zipcode: ${zipcode}` : ''}${country ? `, country: ${country}` : ''}`);
+        const classifyFlag = resolveClassifyResidenceFlag(req.body);
+        const ignoredFlags = collectIgnoredClientFlags(req.body);
+        const cap = maxLeads || 60;
 
         let allResults = [];
-        let detectedLocations = [];
+        const detectedLocations = [];
 
-        // Check if multipolygon - search each polygon separately
+        async function finalizeAndSend(uniqueSlice, polygonsSearched, totalBeforeDedup) {
+            const finalResults = classifyFlag
+                ? await classifyResidenceBatch(uniqueSlice, bodyRcOptions || {})
+                : uniqueSlice;
+
+            res.json({
+                success: true,
+                results: finalResults,
+                count: finalResults.length,
+                searchSource: 'Google Places',
+                pipeline: 'google',
+                phase1DiscoveryOnly: true,
+                ignoredFlags,
+                residenceClassificationRan: classifyFlag,
+                residenceClassificationApplied: classifyFlag ? firstConfigApplied(finalResults) : null,
+                query,
+                area,
+                detectedLocations,
+                polygonsSearched,
+                totalResultsBeforeDedup: totalBeforeDedup,
+                zipcode: zipcode || null,
+                country: country || null,
+                timestamp: new Date().toISOString()
+            });
+        }
+
         if (area.type === 'multipolygon' && area.polygons && area.polygons.length > 0) {
-            // Calculate leads per polygon (distribute more evenly with buffer)
-            // Request more per polygon to account for potential deduplication
-            const leadsPerPolygon = Math.ceil((maxLeads * 1.5) / area.polygons.length);
+            const leadsPerPolygon = Math.ceil((cap * 1.5) / area.polygons.length);
 
-            // Search each polygon area
             for (let i = 0; i < area.polygons.length; i++) {
                 const polygon = area.polygons[i];
-
-                // Create a single polygon area object
                 const singlePolygonArea = {
                     type: 'polygon',
                     coordinates: polygon
                 };
 
-                // Calculate center for this polygon
                 const center = calculateAreaCenter(singlePolygonArea);
 
-                // Reverse geocode to get location name
-                let location = null;
-                if (center) {
-                    location = await reverseGeocode(center.lat, center.lng);
-                    detectedLocations.push(location);
+                if (!center || center.lat == null || center.lng == null) {
+                    continue;
                 }
+
+                let location = await reverseGeocode(center.lat, center.lng);
+                if (location) detectedLocations.push(location);
 
                 if (!location) {
                     location = `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
                 }
 
-                // Search this polygon area
                 const polygonResults = await scrapeGoogleMaps(
                     query,
                     location,
@@ -1919,18 +222,15 @@ app.post('/api/scrape-area', async (req, res) => {
 
                 allResults = allResults.concat(polygonResults);
 
-                // If we already have enough leads, we can stop early
-                if (allResults.length >= maxLeads * 1.2) {
+                if (allResults.length >= cap * 1.2) {
                     break;
                 }
 
-                // Small delay between polygon searches to avoid rate limiting
                 if (i < area.polygons.length - 1) {
-                    await delay(1000); // Increased from 500ms to 1000ms
+                    await delay(1000);
                 }
             }
 
-            // Remove duplicates based on placeId
             const uniqueResults = [];
             const seenPlaceIds = new Set();
 
@@ -1941,84 +241,48 @@ app.post('/api/scrape-area', async (req, res) => {
                 }
             }
 
-            // Limit to maxLeads
-            const finalResults = uniqueResults.slice(0, maxLeads);
-
-            // Optionally enrich with Apollo
-            let enrichedResults = finalResults;
-            if (shouldEnrichWithApollo) {
-                enrichedResults = await Promise.all(
-                    finalResults.map(async (lead) => {
-                        const apolloData = await enrichWithApollo(lead);
-                        if (apolloData) {
-                            return { ...lead, ...apolloData, apolloEnriched: true };
-                        }
-                        return lead;
-                    })
-                );
-            }
-
-            res.json({
-                success: true,
-                results: enrichedResults,
-                count: enrichedResults.length,
-                apolloEnriched: shouldEnrichWithApollo || false,
-                apolloEnrichedCount: shouldEnrichWithApollo ? enrichedResults.filter(r => r.apolloEnriched).length : 0,
-                query: query,
-                area: area,
-                detectedLocations: detectedLocations,
-                polygonsSearched: area.polygons.length,
-                totalResultsBeforeDedup: allResults.length,
-                zipcode: zipcode || null,
-                country: country || null,
-                timestamp: new Date().toISOString()
-            });
-
+            const finalSlice = uniqueResults.slice(0, cap);
+            await finalizeAndSend(finalSlice, area.polygons.length, allResults.length);
         } else {
-            // Single area search (original behavior)
             const center = calculateAreaCenter(area);
 
-            let location = null;
-            if (center) {
-                location = await reverseGeocode(center.lat, center.lng);
-                detectedLocations.push(location);
+            if (!center || center.lat == null || center.lng == null) {
+                return res.status(400).json({
+                    error: 'Could not compute center for the given area'
+                });
             }
+
+            let location = await reverseGeocode(center.lat, center.lng);
+            if (location) detectedLocations.push(location);
 
             if (!location) {
                 location = `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
             }
 
-            const results = await scrapeGoogleMaps(query, location, area, zipcode, country, maxLeads || 60);
+            const results = await scrapeGoogleMaps(query, location, area, zipcode, country, cap);
 
-            // Optionally enrich with Apollo
-            let enrichedResults = results;
-            if (shouldEnrichWithApollo) {
-                enrichedResults = await Promise.all(
-                    results.map(async (lead) => {
-                        const apolloData = await enrichWithApollo(lead);
-                        if (apolloData) {
-                            return { ...lead, ...apolloData, apolloEnriched: true };
-                        }
-                        return lead;
-                    })
-                );
-            }
+            const finalResults = classifyFlag
+                ? await classifyResidenceBatch(results, bodyRcOptions || {})
+                : results;
 
             res.json({
                 success: true,
-                results: enrichedResults,
-                count: enrichedResults.length,
-                apolloEnriched: shouldEnrichWithApollo || false,
-                apolloEnrichedCount: shouldEnrichWithApollo ? enrichedResults.filter(r => r.apolloEnriched).length : 0,
-                query: query,
-                area: area,
+                results: finalResults,
+                count: finalResults.length,
+                searchSource: 'Google Places',
+                pipeline: 'google',
+                phase1DiscoveryOnly: true,
+                ignoredFlags,
+                residenceClassificationRan: classifyFlag,
+                residenceClassificationApplied: classifyFlag ? firstConfigApplied(finalResults) : null,
+                query,
+                area,
                 detectedLocation: location,
                 zipcode: zipcode || null,
                 country: country || null,
                 timestamp: new Date().toISOString()
             });
         }
-
     } catch (error) {
         console.error('Area scrape error:', error);
         res.status(500).json({
@@ -2028,761 +292,6 @@ app.post('/api/scrape-area', async (req, res) => {
     }
 });
 
-// AI verification endpoint (now with Apollo enrichment and phone validation)
-app.post('/api/verify', async (req, res) => {
-    try {
-        const { lead, aiProvider } = req.body;
-
-        if (!lead) {
-            return res.status(400).json({
-                error: 'Lead data is required'
-            });
-        }
-
-        // Step 1: Try Apollo enrichment first
-        const apolloData = await enrichWithApollo(lead);
-
-        // Merge Apollo data with original lead - Accept owner name from Apollo if available
-        let enrichedLead = { ...lead };
-        if (apolloData) {
-            enrichedLead = {
-                ...enrichedLead,
-                ...apolloData,
-                apolloEnriched: true
-            };
-        }
-
-        // Step 2: Try People Data Labs owner search (PRIORITY SOURCE)
-        const pdlData = await findCompanyOwnerWithPDL(
-            enrichedLead.companyName,
-            enrichedLead.city,
-            enrichedLead.state,
-            enrichedLead.country
-        );
-
-        if (pdlData && pdlData.ownerName) {
-            enrichedLead = {
-                ...enrichedLead,
-                ...pdlData,
-                pdlEnriched: true,
-                ownerDataSource: 'People Data Labs (Verified)',
-                ownerVerified: true
-            };
-        }
-
-        // Step 3: Find emails with Hunter.io (SECONDARY SOURCE)
-        const hunterData = await findEmailsWithHunter(enrichedLead);
-
-        if (hunterData && hunterData.ownerName && hunterData.ownerName !== 'N/A') {
-            // Only use Hunter owner name if we don't already have a PDL verified name
-            if (!enrichedLead.ownerVerified) {
-                enrichedLead = {
-                    ...enrichedLead,
-                    ownerName: hunterData.ownerName,
-                    ownerPosition: hunterData.ownerPosition,
-                    ownerDataSource: 'Hunter.io Domain Search',
-                    ownerVerified: true,
-                    hunterEnriched: true
-                };
-            } else {
-                enrichedLead.hunterEnriched = true;
-            }
-
-            // Always add email data regardless
-            enrichedLead.primaryEmail = hunterData.primaryEmail;
-            enrichedLead.emails = hunterData.emails;
-            enrichedLead.domain = hunterData.domain;
-        }
-
-        // Step 4: Validate phone number with Numverify
-        if (enrichedLead.phone && enrichedLead.phone !== 'N/A') {
-            const phoneValidation = await validatePhoneWithNumverify(enrichedLead.phone);
-            if (phoneValidation) {
-                enrichedLead.phoneValidation = phoneValidation;
-                // Update phone to international format if valid
-                if (phoneValidation.valid && phoneValidation.internationalFormat) {
-                    enrichedLead.phoneFormatted = phoneValidation.internationalFormat;
-                }
-            }
-        }
-
-        // Step 5: Verify with Yelp
-        const yelpData = await verifyWithYelp(enrichedLead);
-
-        if (yelpData && yelpData.yelpVerified) {
-            enrichedLead = {
-                ...enrichedLead,
-                ...yelpData,
-                yelpEnriched: true
-            };
-        }
-
-        // Step 6: Use AI verification ONLY if no verified owner found
-        const provider = aiProvider || 'both';
-
-        if (enrichedLead.ownerVerified) {
-            // Just add business details without AI guessing
-            enrichedLead.verified = true;
-            enrichedLead.aiConfidence = 95; // High confidence from real sources
-            res.json(enrichedLead);
-        } else {
-            const verifiedLead = await verifyLeadWithAI(enrichedLead, provider);
-
-            // Mark that this is AI estimated, not verified
-            if (!verifiedLead.ownerDataSource) {
-                verifiedLead.ownerDataSource = 'AI Estimated (Not Verified)';
-                verifiedLead.ownerVerified = false;
-            }
-
-            res.json(verifiedLead);
-        }
-
-    } catch (error) {
-        console.error('Verification error:', error);
-        res.status(500).json({
-            error: 'Failed to verify lead',
-            message: error.message
-        });
-    }
-});
-
-// Apollo Organization Search endpoint
-app.post('/api/apollo/organizations', async (req, res) => {
-    try {
-        const filters = req.body;
-
-        const results = await searchApolloOrganizations(filters);
-
-        res.json({
-            success: true,
-            results: results,
-            count: results.length,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Apollo Organizations search error:', error);
-        res.status(500).json({
-            error: 'Failed to search Apollo Organizations',
-            message: error.message
-        });
-    }
-});
-
-// Apollo People Search endpoint
-app.post('/api/apollo/people', async (req, res) => {
-    try {
-        const filters = req.body;
-
-        const results = await searchApolloPeople(filters);
-
-        res.json({
-            success: true,
-            results: results,
-            count: results.length,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Apollo People search error:', error);
-        res.status(500).json({
-            error: 'Failed to search Apollo People',
-            message: error.message
-        });
-    }
-});
-
-// People Data Labs - Find Company Owner endpoint
-app.post('/api/pdl/find-owner', async (req, res) => {
-    try {
-        const { companyName, city, state, country } = req.body;
-
-        if (!companyName) {
-            return res.status(400).json({
-                error: 'Company name is required'
-            });
-        }
-
-
-        const ownerData = await findCompanyOwnerWithPDL(companyName, city, state, country);
-
-        if (!ownerData) {
-            return res.status(404).json({
-                error: 'No owner found',
-                message: 'Could not find owner/decision-maker for this company in People Data Labs database'
-            });
-        }
-
-        res.json({
-            success: true,
-            owner: ownerData,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('PDL find owner error:', error);
-        res.status(500).json({
-            error: 'Failed to find company owner',
-            message: error.message
-        });
-    }
-});
-
-// Apollo Enrichment endpoint (standalone)
-app.post('/api/apollo/enrich', async (req, res) => {
-    try {
-        const { lead } = req.body;
-
-        if (!lead) {
-            return res.status(400).json({
-                error: 'Lead data is required'
-            });
-        }
-
-
-        const enrichedData = await enrichWithApollo(lead);
-
-        if (!enrichedData) {
-            return res.status(404).json({
-                error: 'No enrichment data found',
-                message: 'Apollo could not find a match for this lead'
-            });
-        }
-
-        res.json({
-            success: true,
-            data: enrichedData,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Apollo enrichment error:', error);
-        res.status(500).json({
-            error: 'Failed to enrich with Apollo',
-            message: error.message
-        });
-    }
-});
-
-// Manual lead enrichment endpoint
-app.post('/api/enrich-manual', async (req, res) => {
-    try {
-        const manualData = req.body;
-
-        // Check if at least one field is provided
-        const hasData = Object.values(manualData).some(value => value && value.trim() !== '');
-        if (!hasData) {
-            return res.status(400).json({
-                error: 'At least one field is required'
-            });
-        }
-
-
-        let scrapedResults = [];
-        let searchMethod = 'unknown';
-
-        try {
-            const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-
-            if (!apiKey) {
-                throw new Error('Google Places API key not configured');
-            }
-
-            // Strategy 1: Search by phone number if provided
-            if (manualData.phone && manualData.phone.trim()) {
-                searchMethod = 'phone';
-
-                try {
-                    const phoneSearchUrl = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json';
-                    const phoneResponse = await axios.get(phoneSearchUrl, {
-                        params: {
-                            input: manualData.phone,
-                            inputtype: 'phonenumber',
-                            fields: 'place_id',
-                            key: apiKey
-                        }
-                    });
-
-                    if (phoneResponse.data.status === 'OK' && phoneResponse.data.candidates.length > 0) {
-                        // Get place details
-                        const placeId = phoneResponse.data.candidates[0].place_id;
-                        const detailsUrl = 'https://maps.googleapis.com/maps/api/place/details/json';
-                        const detailsResponse = await axios.get(detailsUrl, {
-                            params: {
-                                place_id: placeId,
-                                fields: 'name,formatted_address,formatted_phone_number,international_phone_number,website,rating,user_ratings_total,types,geometry,address_components',
-                                key: apiKey
-                            }
-                        });
-
-                        if (detailsResponse.data.status === 'OK') {
-                            const details = detailsResponse.data.result;
-                            scrapedResults.push(convertPlaceDetailsToLead(details, placeId));
-                        }
-                    }
-                } catch (phoneError) {
-                    console.error('Phone search failed:', phoneError.message);
-                }
-            }
-
-            // Strategy 2: Search by address if provided and no results yet
-            if (scrapedResults.length === 0 && (manualData.address || (manualData.city && manualData.zipcode))) {
-                let addressQuery = '';
-
-                if (manualData.address) {
-                    addressQuery = manualData.address;
-                } else if (manualData.city && manualData.zipcode) {
-                    addressQuery = `${manualData.city} ${manualData.zipcode}`;
-                }
-
-                if (manualData.country) {
-                    addressQuery += ` ${manualData.country}`;
-                }
-
-                searchMethod = 'address';
-
-                // Use text search to find businesses at the address
-                const textSearchUrl = 'https://maps.googleapis.com/maps/api/place/textsearch/json';
-                const addressResponse = await axios.get(textSearchUrl, {
-                    params: {
-                        query: `business at ${addressQuery}`,
-                        key: apiKey
-                    }
-                });
-
-                if (addressResponse.data.status === 'OK' && addressResponse.data.results.length > 0) {
-                    // Get details for top results
-                    for (let i = 0; i < Math.min(3, addressResponse.data.results.length); i++) {
-                        const place = addressResponse.data.results[i];
-                        const detailsUrl = 'https://maps.googleapis.com/maps/api/place/details/json';
-                        const detailsResponse = await axios.get(detailsUrl, {
-                            params: {
-                                place_id: place.place_id,
-                                fields: 'name,formatted_address,formatted_phone_number,international_phone_number,website,rating,user_ratings_total,types,geometry,address_components',
-                                key: apiKey
-                            }
-                        });
-
-                        if (detailsResponse.data.status === 'OK') {
-                            const details = detailsResponse.data.result;
-                            scrapedResults.push(convertPlaceDetailsToLead(details, place.place_id));
-                        }
-
-                        await delay(100);
-                    }
-
-                }
-            }
-
-            // Strategy 3: Search by company name if provided
-            if (scrapedResults.length === 0 && manualData.companyName && manualData.companyName.trim()) {
-                searchMethod = 'company_name';
-
-                // Build location string
-                let location = null;
-                if (manualData.city && manualData.country) {
-                    location = `${manualData.city}, ${manualData.country}`;
-                } else if (manualData.city) {
-                    location = manualData.city;
-                } else if (manualData.address) {
-                    const addressParts = manualData.address.split(',');
-                    if (addressParts.length >= 2) {
-                        location = addressParts[addressParts.length - 2].trim();
-                    }
-                }
-
-                if (location) {
-                    scrapedResults = await scrapeGoogleMaps(manualData.companyName, location, null, manualData.zipcode, manualData.country, 5);
-                } else {
-                    scrapedResults = await scrapeGoogleMaps(manualData.companyName, 'United States', null, manualData.zipcode, manualData.country, 5);
-                }
-            }
-
-        } catch (scrapeError) {
-            console.error('Scraping failed, will use manual data only:', scrapeError.message);
-        }
-
-        // Find best match from scraped results
-        let enrichedLead = { ...manualData, id: Date.now() };
-
-        if (scrapedResults.length > 0) {
-            let bestMatch = scrapedResults[0];
-
-            // If company name was provided, try to find best match
-            if (manualData.companyName && manualData.companyName.trim()) {
-                const exactMatch = scrapedResults.find(result =>
-                    result.companyName.toLowerCase() === manualData.companyName.toLowerCase()
-                );
-
-                const partialMatch = scrapedResults.find(result =>
-                    result.companyName.toLowerCase().includes(manualData.companyName.toLowerCase()) ||
-                    manualData.companyName.toLowerCase().includes(result.companyName.toLowerCase())
-                );
-
-                bestMatch = exactMatch || partialMatch || scrapedResults[0];
-            }
-
-            // Merge scraped data with manual data
-            enrichedLead = {
-                ...bestMatch,
-                id: Date.now(),
-                // Manual data overrides scraped data only if provided and not empty
-                companyName: manualData.companyName?.trim() || bestMatch.companyName,
-                phone: manualData.phone?.trim() || bestMatch.phone,
-                address: manualData.address?.trim() || bestMatch.address,
-                zipcode: manualData.zipcode?.trim() || bestMatch.zipcode,
-                city: manualData.city?.trim() || bestMatch.city,
-                country: manualData.country?.trim() || bestMatch.country,
-                industry: manualData.industry?.trim() || bestMatch.industry,
-                ownerName: manualData.ownerName?.trim() || bestMatch.ownerName,
-                website: bestMatch.website,
-                rating: bestMatch.rating,
-                reviewCount: bestMatch.reviewCount
-            };
-
-        } else {
-            // No results from scraping, use whatever manual data was provided
-            enrichedLead.companyName = manualData.companyName || 'Unknown Business';
-        }
-
-        // Now verify and enrich with AI
-        const verifiedLead = await verifyLeadWithAI(enrichedLead, 'both');
-
-        // Add metadata about enrichment
-        verifiedLead.enrichmentSource = scrapedResults.length > 0 ? `Google Maps (${searchMethod}) + AI` : 'Manual + AI';
-        verifiedLead.scrapedDataAvailable = scrapedResults.length > 0;
-        verifiedLead.searchMethod = searchMethod;
-
-
-        res.json(verifiedLead);
-
-    } catch (error) {
-        console.error('Manual enrichment error:', error);
-        res.status(500).json({
-            error: 'Failed to enrich lead',
-            message: error.message
-        });
-    }
-});
-
-// Helper function to clean and validate phone number
-function cleanPhoneNumber(phone) {
-    if (!phone || phone === 'N/A') return 'N/A';
-
-    // Remove any text that's not a phone number
-    // Phone numbers should contain digits, spaces, dashes, parentheses, plus signs
-    const phonePattern = /[\d\s\-\(\)\+\.]/g;
-    const matches = phone.match(phonePattern);
-
-    if (!matches) return 'N/A';
-
-    const cleaned = matches.join('').trim();
-
-    // Check if it looks like a phone number (has at least 7 digits)
-    const digitCount = (cleaned.match(/\d/g) || []).length;
-    if (digitCount < 7) return 'N/A';
-
-    return cleaned;
-}
-
-// Helper function to clean and validate zipcode
-function cleanZipcode(zipcode) {
-    if (!zipcode || zipcode === 'N/A') return 'N/A';
-
-    // Remove anything that's not digits, letters, spaces, or dashes
-    let cleaned = zipcode.replace(/[^0-9A-Za-z\s\-]/g, '').trim();
-
-    // Zipcodes should be short (US: 5 or 9 digits, Canada: 6 chars, UK: 6-8 chars)
-    // If longer than 15 characters, it's probably not a zipcode
-    if (cleaned.length > 15) return 'N/A';
-
-    // If it contains full words like "United States", it's not a zipcode
-    if (cleaned.match(/United|States|America|Canada|Kingdom|City|County|Street|Avenue|Road/i)) {
-        return 'N/A';
-    }
-
-    return cleaned;
-}
-
-// Helper function to clean and validate address
-function cleanAddress(address) {
-    if (!address || address === 'N/A') return 'N/A';
-
-    const cleaned = address.trim();
-
-    // Check if it looks like a phone number (too many digits relative to length)
-    const digitCount = (cleaned.match(/\d/g) || []).length;
-    const totalLength = cleaned.length;
-
-    // If more than 40% digits and less than 30 chars, it's probably a phone number
-    if (digitCount > 7 && (digitCount / totalLength) > 0.4 && totalLength < 30) {
-        return 'N/A';
-    }
-
-    // Check for phone number patterns
-    const phonePatterns = [
-        /^\+?1?\s*\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}$/,  // US phone format
-        /^\(\d{3}\)\s*\d{3}[\s\-]?\d{4}$/,  // (555) 555-5555
-        /^\d{3}[\s\-]\d{3}[\s\-]\d{4}$/,  // 555-555-5555
-        /^\+\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}$/  // International
-    ];
-
-    for (const pattern of phonePatterns) {
-        if (pattern.test(cleaned)) {
-            return 'N/A';
-        }
-    }
-
-    // Check if it looks like a person's name (2-3 words, each capitalized, no numbers or street indicators)
-    const words = cleaned.split(/\s+/);
-    const hasStreetIndicators = /Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Circle|Place|Pl|Square|Sq|Parkway|Pkwy|\d+/i.test(cleaned);
-
-    // If it's 2-4 words, all capitalized, no street indicators and no numbers, it's likely a name
-    if (words.length >= 2 && words.length <= 4 && !hasStreetIndicators) {
-        const allCapitalized = words.every(word => /^[A-Z][a-z]+$/.test(word));
-        if (allCapitalized) {
-            return 'N/A';
-        }
-    }
-
-    // Check if it's too short to be a real address (less than 10 chars)
-    if (cleaned.length < 10) {
-        return 'N/A';
-    }
-
-    return cleaned;
-}
-
-// Helper function to convert Google Place Details to Lead format
-function convertPlaceDetailsToLead(details, placeId) {
-    const addressComponents = details.address_components || [];
-    let extractedZipcode = '';
-    let extractedCity = '';
-    let extractedCountry = '';
-    let extractedState = '';
-
-    addressComponents.forEach(component => {
-        if (component.types.includes('postal_code')) {
-            extractedZipcode = component.long_name;
-        }
-        if (component.types.includes('locality')) {
-            extractedCity = component.long_name;
-        }
-        if (component.types.includes('country')) {
-            extractedCountry = component.long_name;
-        }
-        if (component.types.includes('administrative_area_level_1')) {
-            extractedState = component.short_name;
-        }
-    });
-
-    // Clean and validate the extracted data
-    const cleanedPhone = cleanPhoneNumber(details.formatted_phone_number || details.international_phone_number);
-    const cleanedZipcode = cleanZipcode(extractedZipcode);
-    const cleanedAddress = cleanAddress(details.formatted_address);
-
-    const types = details.types || [];
-    let industry = 'Business';
-    if (types.includes('restaurant')) industry = 'Restaurant';
-    else if (types.includes('store') || types.includes('retail')) industry = 'Retail';
-    else if (types.includes('hospital') || types.includes('doctor')) industry = 'Healthcare';
-    else if (types.includes('lawyer')) industry = 'Legal Services';
-    else if (types.includes('real_estate_agency')) industry = 'Real Estate';
-    else if (types.includes('cafe') || types.includes('bakery')) industry = 'Food & Beverage';
-    else if (types.includes('gym')) industry = 'Fitness';
-    else if (types.includes('beauty_salon') || types.includes('spa')) industry = 'Beauty & Wellness';
-    else if (types.length > 0) {
-        industry = types[0].replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-    }
-
-    return {
-        id: Date.now() + Math.random(),
-        companyName: details.name,
-        phone: cleanedPhone,
-        address: cleanedAddress,
-        zipcode: cleanedZipcode,
-        city: extractedCity || 'N/A',
-        country: extractedCountry || 'N/A',
-        state: extractedState || '',
-        industry: industry,
-        website: details.website || 'N/A',
-        rating: details.rating || 'N/A',
-        reviewCount: details.user_ratings_total || 0,
-        latitude: details.geometry?.location?.lat || null,
-        longitude: details.geometry?.location?.lng || null,
-        placeId: placeId,
-        types: types,
-        source: 'Google Places API'
-    };
-}
-
-// Get AI status endpoint (check which APIs are configured)
-app.get('/api/ai-status', (req, res) => {
-    // Check if OpenAI key is configured and valid (not a placeholder)
-    const openaiKey = process.env.OPENAI_API_KEY;
-
-    // Simplified validation - just check if key exists and starts with sk-
-    const openaiConfigured = openaiKey &&
-        openaiKey.trim().length > 20 &&
-        (openaiKey.trim().startsWith('sk-') || openaiKey.trim().startsWith('sk-proj-'));
-
-    // Check if Anthropic key is configured and valid (not a placeholder)
-    const claudeKey = process.env.ANTHROPIC_API_KEY;
-    const claudeConfigured = claudeKey &&
-        claudeKey.trim() !== '' &&
-        !claudeKey.includes('your_anthropic') &&
-        !claudeKey.includes('api_key_here') &&
-        claudeKey.startsWith('sk-ant-');
-
-    // Check if Apollo key is configured and valid (not a placeholder)
-    const apolloKey = process.env.APOLLO_API_KEY;
-    const apolloConfigured = apolloKey &&
-        apolloKey.trim() !== '' &&
-        !apolloKey.includes('your_apollo') &&
-        !apolloKey.includes('api_key_here') &&
-        apolloKey.trim().length > 10;
-
-    // Check if Numverify key is configured and valid (not a placeholder)
-    const numverifyKey = process.env.NUMVERIFY_API_KEY;
-    const numverifyConfigured = numverifyKey &&
-        numverifyKey.trim() !== '' &&
-        !numverifyKey.includes('your_numverify') &&
-        !numverifyKey.includes('api_key_here') &&
-        numverifyKey.trim().length > 10;
-
-    // Check if People Data Labs key is configured and valid (not a placeholder)
-    const pdlKey = process.env.PDL_API_KEY;
-    const pdlConfigured = pdlKey &&
-        pdlKey.trim() !== '' &&
-        !pdlKey.includes('your_pdl') &&
-        !pdlKey.includes('api_key_here') &&
-        pdlKey.trim().length > 20;
-
-    // Check if Hunter.io key is configured and valid (not a placeholder)
-    const hunterKey = process.env.HUNTER_API_KEY;
-    const hunterConfigured = hunterKey &&
-        hunterKey.trim() !== '' &&
-        !hunterKey.includes('your_hunter') &&
-        !hunterKey.includes('api_key_here') &&
-        hunterKey.trim().length > 20;
-
-    // Check if Yelp key is configured and valid (not a placeholder)
-    const yelpKey = process.env.YELP_API_KEY;
-    const yelpConfigured = yelpKey &&
-        yelpKey.trim() !== '' &&
-        !yelpKey.includes('your_yelp') &&
-        !yelpKey.includes('api_key_here') &&
-        yelpKey.trim().length > 20;
-
-    res.json({
-        openai: {
-            configured: openaiConfigured,
-            status: openaiConfigured ? 'active' : 'not configured'
-        },
-        claude: {
-            configured: claudeConfigured,
-            status: claudeConfigured ? 'active' : 'not configured'
-        },
-        apollo: {
-            configured: apolloConfigured,
-            status: apolloConfigured ? 'active' : 'not configured'
-        },
-        numverify: {
-            configured: numverifyConfigured,
-            status: numverifyConfigured ? 'active' : 'not configured'
-        },
-        peopleDataLabs: {
-            configured: pdlConfigured,
-            status: pdlConfigured ? 'active' : 'not configured'
-        },
-        hunter: {
-            configured: hunterConfigured,
-            status: hunterConfigured ? 'active' : 'not configured'
-        },
-        yelp: {
-            configured: yelpConfigured,
-            status: yelpConfigured ? 'active' : 'not configured'
-        },
-        recommendation: !openaiConfigured && !claudeConfigured
-            ? 'Configure at least one AI API key in the .env file for enhanced lead verification'
-            : 'All services ready'
-    });
-});
-
-// Get all scraped leads (for admin/debugging)
-app.get('/api/leads', (req, res) => {
-    res.json({
-        leads: scrapedLeads,
-        count: scrapedLeads.length
-    });
-});
-
-// Clear all scraped leads (for admin/debugging)
-app.delete('/api/leads', (req, res) => {
-    scrapedLeads = [];
-    res.json({ message: 'All leads cleared' });
-});
-
-// Geocoding endpoint (for location search)
-app.post('/api/geocode', async (req, res) => {
-    try {
-        const { query } = req.body;
-
-        if (!query) {
-            return res.status(400).json({
-                error: 'Search query is required'
-            });
-        }
-
-        // Use Nominatim for geocoding (free alternative to Google Geocoding API)
-        const response = await axios.get('https://nominatim.openstreetmap.org/search', {
-            params: {
-                format: 'json',
-                q: query,
-                limit: 5
-            },
-            headers: {
-                'User-Agent': 'LeadScraperApp/1.0'
-            }
-        });
-
-        res.json({
-            results: response.data.map(item => ({
-                display_name: item.display_name,
-                lat: parseFloat(item.lat),
-                lon: parseFloat(item.lon),
-                type: item.type,
-                importance: item.importance
-            }))
-        });
-
-    } catch (error) {
-        console.error('Geocoding error:', error);
-        res.status(500).json({
-            error: 'Failed to geocode location',
-            message: error.message
-        });
-    }
-});
-
-// Statistics endpoint
-app.get('/api/stats', (req, res) => {
-    res.json({
-        totalLeads: scrapedLeads.length,
-        verifiedLeads: scrapedLeads.filter(l => l.verified).length,
-        averageConfidence: scrapedLeads.length > 0
-            ? scrapedLeads.reduce((sum, l) => sum + (l.aiConfidence || 0), 0) / scrapedLeads.length
-            : 0,
-        topIndustries: scrapedLeads.reduce((acc, lead) => {
-            if (lead.industry) {
-                acc[lead.industry] = (acc[lead.industry] || 0) + 1;
-            }
-            return acc;
-        }, {})
-    });
-});
-
-// Error handling middleware
 app.use((error, req, res, next) => {
     console.error('Unhandled error:', error);
     res.status(500).json({
@@ -2791,14 +300,9 @@ app.use((error, req, res, next) => {
     });
 });
 
-
-// Start server
 app.listen(PORT, () => {
     console.log(`Lead Scraper Backend running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/api/health`);
-    console.log(`Scrape endpoint: http://localhost:${PORT}/api/scrape`);
-    console.log(`Area scrape endpoint: http://localhost:${PORT}/api/scrape-area`);
-    console.log(`Verify endpoint: http://localhost:${PORT}/api/verify`);
 });
 
 module.exports = app;

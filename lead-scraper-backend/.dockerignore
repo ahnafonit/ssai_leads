@@ -1,4 +1,5 @@
 node_modules
+archive
 npm-debug.log
 .env
 .env.local
