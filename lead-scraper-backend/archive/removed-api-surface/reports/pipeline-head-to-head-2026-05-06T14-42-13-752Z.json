@@ -1,0 +1,496 @@
+{
+  "generatedAt": "2026-05-06T14:41:26.802Z",
+  "query": "electrical contractor",
+  "maxDiscovery": 12,
+  "enrichSample": 3,
+  "discoveryOnly": false,
+  "regions": [
+    {
+      "region": "southern_on",
+      "label": "Southern Ontario",
+      "location": "Hamilton, ON",
+      "google": {
+        "discoveryMs": 675,
+        "discovery": {
+          "count": 12,
+          "withWebsite": 12,
+          "withPhone": 12,
+          "pctWebsite": 100,
+          "pctPhone": 100
+        }
+      },
+      "apollo": {
+        "discoveryMs": 335,
+        "discovery": {
+          "count": 8,
+          "withWebsite": 8,
+          "withPhone": 7,
+          "pctWebsite": 100,
+          "pctPhone": 88
+        }
+      },
+      "overlap": {
+        "googleUniqueNames": 12,
+        "apolloUniqueNames": 8,
+        "exactNormalizedOverlap": 2,
+        "jaccard": 0.1111111111111111
+      },
+      "enrichment": {
+        "google": [
+          {
+            "companyName": "Kirsch Electric Contracting Inc.",
+            "ms": 3912,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "Stack Electric",
+            "ms": 3442,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "ElectricSafe.ca",
+            "ms": 2739,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          }
+        ],
+        "apollo": [
+          {
+            "companyName": "All Electrical - Licensed Electrical Contractor",
+            "ms": 139,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          },
+          {
+            "companyName": "Fairway Electrical Services Inc.",
+            "ms": 79,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          },
+          {
+            "companyName": "McGinty Toman Electric Inc.",
+            "ms": 82,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "region": "ohio",
+      "label": "Ohio",
+      "location": "Columbus, OH",
+      "google": {
+        "discoveryMs": 415,
+        "discovery": {
+          "count": 12,
+          "withWebsite": 11,
+          "withPhone": 12,
+          "pctWebsite": 92,
+          "pctPhone": 100
+        }
+      },
+      "apollo": {
+        "discoveryMs": 161,
+        "discovery": {
+          "count": 11,
+          "withWebsite": 11,
+          "withPhone": 9,
+          "pctWebsite": 100,
+          "pctPhone": 82
+        }
+      },
+      "overlap": {
+        "googleUniqueNames": 12,
+        "apolloUniqueNames": 11,
+        "exactNormalizedOverlap": 1,
+        "jaccard": 0.045454545454545456
+      },
+      "enrichment": {
+        "google": [
+          {
+            "companyName": "R & T Yoder Electric, Inc - Central Columbus",
+            "ms": 6509,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "Buckeye Electric of Upper Arlington",
+            "ms": 3521,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "Safe Electric and Plumbing",
+            "ms": 3020,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          }
+        ],
+        "apollo": [
+          {
+            "companyName": "Settle Muter Electric",
+            "ms": 132,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          },
+          {
+            "companyName": "Construction Headhunting",
+            "ms": 90,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          },
+          {
+            "companyName": "Roehrenbeck Electric Inc.",
+            "ms": 101,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "region": "ny_non_nyc",
+      "label": "New York (non-NYC)",
+      "location": "Buffalo, NY",
+      "google": {
+        "discoveryMs": 357,
+        "discovery": {
+          "count": 12,
+          "withWebsite": 10,
+          "withPhone": 12,
+          "pctWebsite": 83,
+          "pctPhone": 100
+        }
+      },
+      "apollo": {
+        "discoveryMs": 202,
+        "discovery": {
+          "count": 2,
+          "withWebsite": 2,
+          "withPhone": 2,
+          "pctWebsite": 100,
+          "pctPhone": 100
+        }
+      },
+      "overlap": {
+        "googleUniqueNames": 12,
+        "apolloUniqueNames": 2,
+        "exactNormalizedOverlap": 0,
+        "jaccard": 0
+      },
+      "enrichment": {
+        "google": [
+          {
+            "companyName": "Ferguson Electric, Inc.",
+            "ms": 3551,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "Dugas Electric",
+            "ms": 2910,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "Great Lakes Electrical, LLC",
+            "ms": 3302,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          }
+        ],
+        "apollo": [
+          {
+            "companyName": "Industrial Power & Lighting Corp.",
+            "ms": 131,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          },
+          {
+            "companyName": "Bison Electrical Services",
+            "ms": 81,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "region": "texas",
+      "label": "Texas",
+      "location": "Houston, TX",
+      "google": {
+        "discoveryMs": 466,
+        "discovery": {
+          "count": 12,
+          "withWebsite": 12,
+          "withPhone": 12,
+          "pctWebsite": 100,
+          "pctPhone": 100
+        }
+      },
+      "apollo": {
+        "discoveryMs": 416,
+        "discovery": {
+          "count": 12,
+          "withWebsite": 11,
+          "withPhone": 11,
+          "pctWebsite": 92,
+          "pctPhone": 92
+        }
+      },
+      "overlap": {
+        "googleUniqueNames": 12,
+        "apolloUniqueNames": 12,
+        "exactNormalizedOverlap": 1,
+        "jaccard": 0.043478260869565216
+      },
+      "enrichment": {
+        "google": [
+          {
+            "companyName": "A1 Plus Electrical, Plumbing and Air Conditioning Repair",
+            "ms": 3112,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "Paul Richard Electric",
+            "ms": 3992,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          },
+          {
+            "companyName": "West Houston Electric, Inc.",
+            "ms": 2829,
+            "strongOwner": false,
+            "ownerName": null,
+            "sources": [
+              "hunter",
+              "smarty",
+              "pdl",
+              "ai_strict"
+            ]
+          }
+        ],
+        "apollo": [
+          {
+            "companyName": "Hays Electrical Services",
+            "ms": 98,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          },
+          {
+            "companyName": "IES Electrical",
+            "ms": 74,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          },
+          {
+            "companyName": "Winsupply Houston Electrical",
+            "ms": 72,
+            "strongOwner": false,
+            "ownerName": null,
+            "steps": [
+              {
+                "provider": "apollo_org_lookup",
+                "status": "ok"
+              },
+              {
+                "provider": "apollo_pipeline",
+                "status": "error"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "google": {
+      "companies": 48,
+      "enrichAttempted": 12,
+      "strongOwner": 0
+    },
+    "apollo": {
+      "companies": 33,
+      "enrichAttempted": 11,
+      "strongOwner": 0
+    }
+  },
+  "summary": {
+    "googleDiscoveryCompanies": 48,
+    "apolloDiscoveryCompanies": 33,
+    "googleStrongOwnersInSample": 0,
+    "apolloStrongOwnersInSample": 0,
+    "note": "Strong owner = non-empty owner name after full enrich (Google path) or Apollo people merge (Apollo path). Discovery counts sum across regions (not deduped across regions)."
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "generatedAt": "2026-05-06T14:58:58.964Z",
+  "maxPerScenario": 5,
+  "overall": {
+    "totalOrgs": 20,
+    "leadsWithApolloPeopleHits": 17,
+    "pctLeadsWithContacts": 85,
+    "withDmName": 17,
+    "pctWithDm": 85
+  },
+  "byScenario": [
+    {
+      "id": "laundromat",
+      "label": "Laundromat",
+      "query": "laundromat",
+      "location": "Hamilton, ON",
+      "country": "Canada",
+      "discoveryCount": 0,
+      "withDm": 0,
+      "pctDm": 0,
+      "leadsWithAtLeastOneApolloContact": 0,
+      "pctLeadsWithContacts": 0,
+      "apolloContactRowsSummed": 0
+    },
+    {
+      "id": "restaurant",
+      "label": "Restaurant",
+      "query": "restaurant",
+      "location": "Buffalo, NY",
+      "country": "United States",
+      "discoveryCount": 5,
+      "withDm": 4,
+      "pctDm": 80,
+      "leadsWithAtLeastOneApolloContact": 4,
+      "pctLeadsWithContacts": 80,
+      "apolloContactRowsSummed": 18
+    },
+    {
+      "id": "industrial",
+      "label": "Industrial / fab",
+      "query": "metal fabrication",
+      "location": "Columbus, OH",
+      "country": "United States",
+      "discoveryCount": 5,
+      "withDm": 4,
+      "pctDm": 80,
+      "leadsWithAtLeastOneApolloContact": 4,
+      "pctLeadsWithContacts": 80,
+      "apolloContactRowsSummed": 13
+    },
+    {
+      "id": "warehouse",
+      "label": "Warehouse / logistics",
+      "query": "warehouse distribution",
+      "location": "Houston, TX",
+      "country": "United States",
+      "discoveryCount": 5,
+      "withDm": 4,
+      "pctDm": 80,
+      "leadsWithAtLeastOneApolloContact": 4,
+      "pctLeadsWithContacts": 80,
+      "apolloContactRowsSummed": 33
+    },
+    {
+      "id": "food_mfg",
+      "label": "Food processing",
+      "query": "food manufacturing",
+      "location": "Toronto, ON",
+      "country": "Canada",
+      "discoveryCount": 5,
+      "withDm": 5,
+      "pctDm": 100,
+      "leadsWithAtLeastOneApolloContact": 5,
+      "pctLeadsWithContacts": 100,
+      "apolloContactRowsSummed": 64
+    }
+  ]
+}
