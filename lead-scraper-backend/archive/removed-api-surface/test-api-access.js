@@ -5,6 +5,10 @@ const axios = require('axios');
 const APOLLO_KEY = process.env.APOLLO_API_KEY;
 const PDL_KEY = process.env.PDL_API_KEY;
 
+/** Large public company used only as API shape smoke-test data (no individuals). */
+const DEMO_ORG_NAME = 'Stripe';
+const DEMO_DOMAIN = 'stripe.com';
+
 async function testEndpoint(label, fn) {
   process.stdout.write(`  ${label.padEnd(50)}`);
   try {
@@ -16,7 +20,7 @@ async function testEndpoint(label, fn) {
     const body = err.response?.data;
     const msg = typeof body === 'string' ? body.substring(0, 120)
       : body?.message || body?.error?.message || body?.error || JSON.stringify(body || '').substring(0, 120);
-    
+
     if (status === 401 || status === 403) {
       console.log(`✗ PERMISSION DENIED  (HTTP ${status}) ${msg}`);
       return 'denied';
@@ -41,7 +45,7 @@ async function run() {
 
   // ══════════════════════════════════════════════════════
   console.log('\n══ APOLLO.IO ══');
-  console.log(`  Key: ${APOLLO_KEY ? APOLLO_KEY.substring(0, 8) + '...' : 'NOT SET'}\n`);
+  console.log(`  Key: ${APOLLO_KEY ? `set (${APOLLO_KEY.length} chars)` : 'NOT SET'}\n`);
 
   if (!APOLLO_KEY) {
     console.log('  ⚠ No Apollo API key configured\n');
@@ -50,7 +54,7 @@ async function run() {
     // 1. Organization Search — known working
     await testEndpoint('Org Search (mixed_companies/search)', async () => {
       const r = await axios.post('https://api.apollo.io/api/v1/mixed_companies/search', {
-        q_organization_name: 'Walmart', page: 1, per_page: 1
+        q_organization_name: DEMO_ORG_NAME, page: 1, per_page: 1
       }, { headers: { 'X-Api-Key': APOLLO_KEY, 'Content-Type': 'application/json' } });
       const orgs = r.data.organizations || [];
       return `${orgs.length} result(s), total: ${r.data.pagination?.total_entries || '?'}`;
@@ -59,7 +63,7 @@ async function run() {
     // 2. Organization Enrich — known working
     await testEndpoint('Org Enrich (organizations/enrich)', async () => {
       const r = await axios.get('https://api.apollo.io/api/v1/organizations/enrich', {
-        params: { domain: 'walmart.com' },
+        params: { domain: DEMO_DOMAIN },
         headers: { 'X-Api-Key': APOLLO_KEY }
       });
       const org = r.data.organization;
@@ -72,7 +76,7 @@ async function run() {
 
     await testEndpoint('  People Search: by domain + titles', async () => {
       const r = await axios.post('https://api.apollo.io/api/v1/mixed_people/search', {
-        q_organization_domains_list: ['walmart.com'],
+        q_organization_domains_list: [DEMO_DOMAIN],
         person_titles: ['CEO'],
         page: 1, per_page: 1
       }, { headers: { 'X-Api-Key': APOLLO_KEY, 'Content-Type': 'application/json' } });
@@ -82,7 +86,7 @@ async function run() {
 
     await testEndpoint('  People Search: by org name only', async () => {
       const r = await axios.post('https://api.apollo.io/api/v1/mixed_people/search', {
-        q_organization_name: 'Walmart',
+        q_organization_name: DEMO_ORG_NAME,
         page: 1, per_page: 1
       }, { headers: { 'X-Api-Key': APOLLO_KEY, 'Content-Type': 'application/json' } });
       const people = r.data.contacts || r.data.people || [];
@@ -109,10 +113,10 @@ async function run() {
 
     console.log('');
 
-    // 4. People Match — known working
+    // 4. People Match — domain-only fixture (no named individuals in repo)
     await testEndpoint('People Match/Enrich (people/match)', async () => {
       const r = await axios.post('https://api.apollo.io/api/v1/people/match', {
-        domain: 'walmart.com', first_name: 'Doug', last_name: 'McMillon'
+        domain: DEMO_DOMAIN
       }, { headers: { 'X-Api-Key': APOLLO_KEY, 'Content-Type': 'application/json' } });
       const p = r.data.person;
       return p ? `${p.name}, title: ${p.title}, email: ${p.email || 'none'}` : 'No person returned';
@@ -121,7 +125,7 @@ async function run() {
 
   // ══════════════════════════════════════════════════════
   console.log('\n══ PEOPLE DATA LABS ══');
-  console.log(`  Key: ${PDL_KEY ? PDL_KEY.substring(0, 12) + '...' : 'NOT SET'}\n`);
+  console.log(`  Key: ${PDL_KEY ? `set (${PDL_KEY.length} chars)` : 'NOT SET'}\n`);
 
   if (!PDL_KEY) {
     console.log('  ⚠ No PDL API key configured\n');
@@ -131,10 +135,10 @@ async function run() {
     // Try multiple SQL queries to rule out bad query
     console.log('  ── Person Search: retrying with multiple queries ──');
 
-    await testEndpoint('  Person Search: Walmart CEO', async () => {
+    await testEndpoint('  Person Search: by company + title', async () => {
       const r = await axios.get('https://api.peopledatalabs.com/v5/person/search', {
         params: {
-          sql: "SELECT * FROM person WHERE job_company_name='Walmart' AND job_title LIKE '%CEO%'",
+          sql: `SELECT * FROM person WHERE job_company_name='${DEMO_ORG_NAME}' AND job_title LIKE '%CEO%'`,
           size: 1
         },
         headers: { 'X-Api-Key': PDL_KEY }
@@ -142,10 +146,10 @@ async function run() {
       return `${r.data.total || 0} total, returned ${r.data.data?.length || 0}`;
     });
 
-    await testEndpoint('  Person Search: Walmart (broad)', async () => {
+    await testEndpoint('  Person Search: by company (broad)', async () => {
       const r = await axios.get('https://api.peopledatalabs.com/v5/person/search', {
         params: {
-          sql: "SELECT * FROM person WHERE job_company_name LIKE '%Walmart%' AND job_title LIKE '%Owner%'",
+          sql: `SELECT * FROM person WHERE job_company_name LIKE '%${DEMO_ORG_NAME}%' AND job_title LIKE '%Owner%'`,
           size: 3
         },
         headers: { 'X-Api-Key': PDL_KEY }
@@ -177,31 +181,15 @@ async function run() {
 
     console.log('');
 
-    // 2. Person Enrich — returned "unknown" last time, try better input
-    console.log('  ── Person Enrich: retrying with better input ──');
+    // 2. Person Enrich — website-only (no emails / personal URLs in repository)
+    console.log('  ── Person Enrich: org-level input only ──');
 
-    await testEndpoint('  Person Enrich: by company + name', async () => {
+    await testEndpoint('  Person Enrich: by company name', async () => {
       const r = await axios.get('https://api.peopledatalabs.com/v5/person/enrich', {
-        params: { company: 'Walmart', first_name: 'Doug', last_name: 'McMillon' },
+        params: { company: DEMO_ORG_NAME },
         headers: { 'X-Api-Key': PDL_KEY }
       });
       return `${r.data.full_name || '?'}, title: ${r.data.job_title || '?'}, emails: ${r.data.emails?.length || 0}`;
-    });
-
-    await testEndpoint('  Person Enrich: by LinkedIn URL', async () => {
-      const r = await axios.get('https://api.peopledatalabs.com/v5/person/enrich', {
-        params: { profile: 'linkedin.com/in/dougmcmillon' },
-        headers: { 'X-Api-Key': PDL_KEY }
-      });
-      return `${r.data.full_name || '?'}, title: ${r.data.job_title || '?'}, emails: ${r.data.emails?.length || 0}`;
-    });
-
-    await testEndpoint('  Person Enrich: by email', async () => {
-      const r = await axios.get('https://api.peopledatalabs.com/v5/person/enrich', {
-        params: { email: 'doug.mcmillon@walmart.com' },
-        headers: { 'X-Api-Key': PDL_KEY }
-      });
-      return `${r.data.full_name || '?'}, title: ${r.data.job_title || '?'}`;
     });
 
     console.log('');
@@ -209,7 +197,7 @@ async function run() {
     // 3. Company Enrich — known working
     await testEndpoint('Company Enrich (company/enrich)', async () => {
       const r = await axios.get('https://api.peopledatalabs.com/v5/company/enrich', {
-        params: { website: 'walmart.com' },
+        params: { website: DEMO_DOMAIN },
         headers: { 'X-Api-Key': PDL_KEY }
       });
       return `${r.data.name}, size: ${r.data.size}, industry: ${r.data.industry}, founded: ${r.data.founded || '?'}`;
@@ -218,7 +206,7 @@ async function run() {
     // 4. Company Search — known working
     await testEndpoint('Company Search (company/search)', async () => {
       const r = await axios.get('https://api.peopledatalabs.com/v5/company/search', {
-        params: { sql: "SELECT * FROM company WHERE name='Walmart'", size: 1 },
+        params: { sql: `SELECT * FROM company WHERE name='${DEMO_ORG_NAME}'`, size: 1 },
         headers: { 'X-Api-Key': PDL_KEY }
       });
       const co = r.data.data?.[0];

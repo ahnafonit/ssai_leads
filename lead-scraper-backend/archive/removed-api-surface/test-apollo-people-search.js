@@ -4,6 +4,9 @@ const axios = require('axios');
 
 const APOLLO_KEY = process.env.APOLLO_API_KEY;
 
+const DEMO_ORG_NAME = 'Stripe';
+const DEMO_DOMAIN = 'stripe.com';
+
 async function test(label, fn) {
   process.stdout.write(`  ${label.padEnd(55)}`);
   try {
@@ -24,7 +27,7 @@ async function run() {
   console.log('  Testing: POST /api/v1/mixed_people/api_search');
   console.log('  (replacement for deprecated mixed_people/search)');
   console.log('='.repeat(75));
-  console.log(`\n  Key: ${APOLLO_KEY ? APOLLO_KEY.substring(0, 8) + '...' : 'NOT SET'}\n`);
+  console.log(`\n  Key: ${APOLLO_KEY ? `set (${APOLLO_KEY.length} chars)` : 'NOT SET'}\n`);
 
   const headers = { 'X-Api-Key': APOLLO_KEY, 'Content-Type': 'application/json' };
   const url = 'https://api.apollo.io/api/v1/mixed_people/api_search';
@@ -32,7 +35,7 @@ async function run() {
   // Test 1: Search by company domain + titles
   await test('By domain + CEO title', async () => {
     const r = await axios.post(url, {
-      q_organization_domains_list: ['walmart.com'],
+      q_organization_domains_list: [DEMO_DOMAIN],
       person_titles: ['CEO'],
       per_page: 3
     }, { headers });
@@ -44,7 +47,7 @@ async function run() {
   // Test 2: Search by org name + seniority
   await test('By org name + owner/c_suite seniority', async () => {
     const r = await axios.post(url, {
-      q_organization_name: 'Walmart',
+      q_organization_name: DEMO_ORG_NAME,
       person_seniorities: ['owner', 'c_suite'],
       per_page: 3
     }, { headers });
@@ -57,7 +60,7 @@ async function run() {
   let orgId = null;
   await test('Get org_id from Org Search first...', async () => {
     const r = await axios.post('https://api.apollo.io/api/v1/mixed_companies/search', {
-      q_organization_name: 'Walmart', per_page: 1
+      q_organization_name: DEMO_ORG_NAME, per_page: 1
     }, { headers });
     orgId = r.data.organizations?.[0]?.id;
     return orgId ? `org_id: ${orgId}` : 'No org found';
@@ -77,9 +80,9 @@ async function run() {
   }
 
   // Test 4: Search for a small local business owner
-  await test('Small biz: "Joe\'s Pizza" owner search', async () => {
+  await test('Small biz: generic pizza shop owner search', async () => {
     const r = await axios.post(url, {
-      q_organization_name: "Joe's Pizza",
+      q_organization_name: 'Sample Pizza Shop',
       person_seniorities: ['owner', 'founder'],
       person_locations: ['New York, United States'],
       per_page: 3
@@ -97,14 +100,14 @@ async function run() {
       per_page: 3
     }, { headers });
     const people = r.data.people || r.data.contacts || [];
-    const names = people.map(p => `${p.name || '?'} @ ${p.organization?.name || '?'} (${p.title || '?'})`).join(', ');
+    const names = people.map(p => `${p.name || '?'} — ${p.organization?.name || '?'} (${p.title || '?'})`).join(', ');
     return `${people.length} result(s)${names ? ': ' + names : ''}`;
   });
 
   // Test 6: Check what fields come back (no emails/phones expected per docs)
   await test('Field check: what data comes back?', async () => {
     const r = await axios.post(url, {
-      q_organization_domains_list: ['walmart.com'],
+      q_organization_domains_list: [DEMO_DOMAIN],
       person_seniorities: ['c_suite'],
       per_page: 1
     }, { headers });
