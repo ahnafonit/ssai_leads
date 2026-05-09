@@ -242,7 +242,7 @@ async function scrapeGoogleMapsLegacy(query, location, area = null, zipcode = nu
             const detailsResponse = await axios.get(detailsUrl, {
                 params: {
                     place_id: place.place_id,
-                    fields: 'name,formatted_address,formatted_phone_number,international_phone_number,website,rating,user_ratings_total,types,geometry,address_components',
+                    fields: 'name,formatted_address,formatted_phone_number,international_phone_number,website,rating,user_ratings_total,reviews,types,geometry,address_components',
                     key: apiKey
                 }
             });
@@ -338,7 +338,7 @@ async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null,
             headers: {
                 'Content-Type': 'application/json',
                 'X-Goog-Api-Key': apiKey,
-                'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.internationalPhoneNumber,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.types,places.location,places.addressComponents,nextPageToken'
+                'X-Goog-FieldMask': 'places.name,places.id,places.displayName,places.formattedAddress,places.internationalPhoneNumber,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.types,places.location,places.addressComponents,nextPageToken'
             }
         });
 
@@ -357,7 +357,85 @@ async function scrapeGoogleMapsNew(query, location, area = null, zipcode = null,
     if (allPlaces.length === 0) return [];
 
     const slice = allPlaces.slice(0, maxLeads);
-    return slice.map(place => convertNewPlaceToLead(place)).filter(Boolean);
+    const fetchReviews = newApiFetchReviewsEnabled();
+    const results = [];
+
+    for (const place of slice) {
+        const lead = convertNewPlaceToLead(place);
+        if (!lead) continue;
+
+        if (fetchReviews) {
+            const placeRef = place.name || place.id;
+            if (placeRef) {
+                const excerpts = await fetchNewPlaceReviewExcerpts(placeRef, apiKey);
+                if (excerpts.length > 0) {
+                    lead.googleReviewExcerpts = excerpts;
+                }
+                await delay(100);
+            }
+        }
+
+        results.push(lead);
+    }
+
+    return results;
+}
+
+/** Max review texts attached to a lead for downstream AI (Places Details returns up to 5). */
+const MAX_GOOGLE_REVIEW_EXCERPTS = 5;
+const MAX_GOOGLE_REVIEW_CHARS = 600;
+
+function newApiFetchReviewsEnabled() {
+    const v = process.env.GOOGLE_PLACES_NEW_FETCH_REVIEWS;
+    if (v === undefined || v === '') return true;
+    return !/^0|false|no|off$/i.test(String(v).trim());
+}
+
+/** Reviews from Place Details (New) JSON body (`reviews[].text.text`). */
+function excerptReviewsFromNewApiPlace(placeObj) {
+    const reviews = placeObj.reviews;
+    if (!Array.isArray(reviews) || reviews.length === 0) return [];
+    return reviews.slice(0, MAX_GOOGLE_REVIEW_EXCERPTS).map((r) => {
+        const t = r.text && r.text.text != null ? String(r.text.text).trim() : '';
+        if (!t) return null;
+        return t.length > MAX_GOOGLE_REVIEW_CHARS ? `${t.slice(0, MAX_GOOGLE_REVIEW_CHARS)}…` : t;
+    }).filter(Boolean);
+}
+
+/**
+ * Place Details (New): GET places/{id} with reviews only — supplies googleReviewExcerpts for strict AI
+ * (text search alone does not return review bodies).
+ */
+async function fetchNewPlaceReviewExcerpts(placeResourceId, apiKey) {
+    if (!placeResourceId || !apiKey) return [];
+    let pid = String(placeResourceId).trim();
+    if (pid.startsWith('places/')) {
+        pid = pid.slice('places/'.length);
+    }
+    const url = `https://places.googleapis.com/v1/places/${encodeURIComponent(pid)}`;
+    try {
+        const { data } = await axios.get(url, {
+            headers: {
+                'X-Goog-Api-Key': apiKey,
+                'X-Goog-FieldMask': 'reviews'
+            }
+        });
+        return excerptReviewsFromNewApiPlace(data);
+    } catch (e) {
+        const st = e.response && e.response.status;
+        console.warn(`[Places API New] review excerpts fetch failed (${st || '??'}) for ${pid}: ${e.message}`);
+        return [];
+    }
+}
+
+function excerptGoogleReviews(details) {
+    const reviews = details.reviews;
+    if (!Array.isArray(reviews) || reviews.length === 0) return [];
+    return reviews.slice(0, MAX_GOOGLE_REVIEW_EXCERPTS).map((r) => {
+        const t = String(r.text || '').trim();
+        if (!t) return null;
+        return t.length > MAX_GOOGLE_REVIEW_CHARS ? `${t.slice(0, MAX_GOOGLE_REVIEW_CHARS)}…` : t;
+    }).filter(Boolean);
 }
 
 function convertNewPlaceToLead(place) {
@@ -471,6 +549,7 @@ function convertPlaceDetailsToLead(details, placeId) {
         longitude: details.geometry?.location?.lng || null,
         placeId: placeId,
         types,
+        googleReviewExcerpts: excerptGoogleReviews(details),
         source: 'Google Places API'
     };
 }
@@ -523,12 +602,32 @@ async function reverseGeocode(lat, lng) {
     }
 }
 
+/**
+ * If lead came from Places API (New) text search, it often has no review text. Fetch reviews once before strict AI.
+ */
+async function hydrateNewPlaceReviewsIfNeeded(lead) {
+    if (!lead || !newApiFetchReviewsEnabled()) return lead;
+    if (Array.isArray(lead.googleReviewExcerpts) && lead.googleReviewExcerpts.length > 0) {
+        return lead;
+    }
+    const src = String(lead.source || '');
+    if (!src.includes('Google Places API (New)')) return lead;
+    const pid = lead.placeId;
+    if (!pid || pid === 'N/A') return lead;
+    const apiKey = process.env.GOOGLE_PLACES_NEW_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
+    if (!apiKey) return lead;
+    const excerpts = await fetchNewPlaceReviewExcerpts(pid, apiKey);
+    if (!excerpts.length) return lead;
+    return { ...lead, googleReviewExcerpts: excerpts };
+}
+
 module.exports = {
     scrapeGoogleMaps,
     scrapeGoogleMapsLegacy,
     scrapeGoogleMapsNew,
     convertPlaceDetailsToLead,
     convertNewPlaceToLead,
+    hydrateNewPlaceReviewsIfNeeded,
     calculateAreaCenter,
     reverseGeocode,
     delay,
